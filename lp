@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtWidgets import QMainWindow, QHBoxLayout, QTextEdit, QSizePolicy, QGraphicsOpacityEffect, QPushButton, \
     QCheckBox, QGridLayout, QInputDialog, QComboBox
 from PyQt5.QtWidgets import QWidget, QLabel, QDoubleSpinBox, QVBoxLayout
-from numba import prange
+#from numba import prange
 from ping3 import ping
 from pyModbusTCP.client import ModbusClient
 from pymodbus.constants import Endian
@@ -71,33 +71,28 @@ if pings:
 
 
 def long_function(q):
+    reservlist = {}
     while True:
         data = []
-        try:
-            # sleep(1)
-            for key, value in ips.items():
-                index = list(ips.keys()).index(key)
-                client = ModbusClient(host=key, port=502, unit_id=1, auto_open=True)
-                listd = []
-                sleep(1 / 18)
-                for ch in prange(
-                        (new_list_of_dict_values[index][0] - 1) * 2, (new_list_of_dict_values[index][-1]) * 2, 2):
-                    try:
-                        response = client.read_input_registers(ch, reg_nb=2)
-                        decoder = BinaryPayloadDecoder.fromRegisters(
-                            response, Endian.Big, wordorder=Endian.Little).decode_32bit_float()
-                        listd.append(decoder)
-                    except Exception as error:
-                        print(key)
-                        print(ch)
-                        print(error)
-                data.append(listd)
-            q.put_nowait(data)
-        except Exception as error:
-            data.append(0)
-            print(error, 'cicle', )
-            print(time.strftime("%d/%m/%y %H:%M:%S"))
-            t1.start()
+        for key, value in ips.items():
+            index = list(ips.keys()).index(key)
+            client = ModbusClient(host=key, port=502, unit_id=1, auto_open=True)
+            listd = []
+            sleep(1 / 18)
+            for i,ch in enumerate(range(
+                    (new_list_of_dict_values[index][0] - 1) * 2, (new_list_of_dict_values[index][-1]) * 2, 2)):
+                try:
+                    response = client.read_input_registers(ch, reg_nb=2)
+                    decoder = BinaryPayloadDecoder.fromRegisters(
+                        response, Endian.Big, wordorder=Endian.Little).decode_32bit_float()
+                    listd.append(decoder)
+                    reservlist.setdefault(i, decoder)
+                except Exception as e:
+                    print(e)
+                    listd.append(reservlist[i])
+                    continue
+            data.append(listd)
+        q.put_nowait(data)
 
 
 def t1live():
@@ -887,7 +882,7 @@ class MainShem(QMainWindow):
         okpressed = inputdialog.exec_()
         text = inputdialog.textValue()
         chnamelist = []
-        for i in prange(len(self.ourch)):
+        for i in range(len(self.ourch)):
             chnamelist.append(self.ourch[i].name)
         if okpressed and text[:text.find(
                 ' ')] in chnamelist and '+' in text or '-' in text:
