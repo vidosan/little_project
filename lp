@@ -21,7 +21,6 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtWidgets import QMainWindow, QHBoxLayout, QTextEdit, QSizePolicy, QGraphicsOpacityEffect, QPushButton, \
     QCheckBox, QGridLayout, QInputDialog, QComboBox
 from PyQt5.QtWidgets import QWidget, QLabel, QDoubleSpinBox, QVBoxLayout
-#from numba import prange
 from ping3 import ping
 from pyModbusTCP.client import ModbusClient
 from pymodbus.constants import Endian
@@ -50,7 +49,7 @@ sensor_size = 14
 hidename = 0
 Vrema = "%H_%M_%S__%d-%m-%y"
 with open(setting) as f:
-    for indx,line in enumerate(f):
+    for indx, line in enumerate(f):
         try:
             if any(
                     var in line for var in (
@@ -73,24 +72,25 @@ if pings:
 def long_function(q):
     reservlist = {}
     while True:
+        number_of_channels = 0
         data = []
         for key, value in ips.items():
             index = list(ips.keys()).index(key)
             client = ModbusClient(host=key, port=502, unit_id=1, auto_open=True)
             listd = []
             sleep(1 / 18)
-            for i,ch in enumerate(range(
+            for i, ch in enumerate(range(
                     (new_list_of_dict_values[index][0] - 1) * 2, (new_list_of_dict_values[index][-1]) * 2, 2)):
                 try:
                     response = client.read_input_registers(ch, reg_nb=2)
                     decoder = BinaryPayloadDecoder.fromRegisters(
                         response, Endian.Big, wordorder=Endian.Little).decode_32bit_float()
                     listd.append(decoder)
-                    reservlist.setdefault(i, decoder)
-                except Exception as e:
-                    print(e)
+                    reservlist.setdefault(i + number_of_channels, decoder)
+                except Exception:
                     listd.append(reservlist[i])
                     continue
+            number_of_channels += len(value) if type(value) == list else value
             data.append(listd)
         q.put_nowait(data)
 
@@ -98,6 +98,7 @@ def long_function(q):
 def t1live():
     if t1.is_alive():
         return qe.get()
+
 
 qe = queue.Queue()
 t1 = threading.Thread(target=long_function, args=[qe])
@@ -805,8 +806,9 @@ class MainShem(QMainWindow):
         self.roll.clicked.connect(self.showMinimized)
         self.roll.setText('_')
         self.roll.show()
-        self.sendol = dict(sorted(self.sendall().items()))
+        self.sendol = self.sendall()
         keyboard.add_hotkey('PrtScn', self.print_screen)
+
     def text_changed(self):
         self.timerfile = QTimer()
         self.timerfile.timeout.connect(self.input.clearFocus)
@@ -816,7 +818,7 @@ class MainShem(QMainWindow):
         reply = QMessageBox.question(self, 'Message',
                                      "Вы уверены, что хотите выйти?", QMessageBox.Yes |
                                      QMessageBox.No, QMessageBox.No)
-        event.accept() if reply == QMessageBox.Yes else event.ignore()
+        os._exit(0) if reply == QMessageBox.Yes else event.ignore()
 
     def fullroll(self):
         if self.isFullScreen():
@@ -931,7 +933,6 @@ class MainShem(QMainWindow):
         else:
             self.df = pd.DataFrame(
                 list(itertools.chain.from_iterable(main_window_data))).T
-            self.df = self.df.rename(columns=lambda x: x + 1)
             for i in self.df.columns:
                 if i in self.sendol:
                     self.df = self.df.rename(columns={i: self.sendol[i]})
@@ -973,11 +974,7 @@ class MainShem(QMainWindow):
                 continue
 
     def sendall(self):
-        dataname = {}
-        for i in self.sensor_list:
-            dataname[(i.ch + i.reg * 14)] = f'{i.name}_ch{i.ch}_r{i.reg}'
-        #  dataname[(i.ch + sum(list(ips.values())[:i.reg]))] = f'{i.name}_ch{i.ch}_r{i.reg}'
-        return dataname
+        return {i: sensor for i, sensor in enumerate(self.sensor_list)}
 
     def read_file(self, setting):
         try:
@@ -1019,7 +1016,7 @@ class MainShem(QMainWindow):
                                 setting[2]), self)
                         f.show()
                         continue
-                    #elif any(x in row.lower() for x in ['da', 'dd', 'dt', 'dp', 'g']):
+                    # elif any(x in row.lower() for x in ['da', 'dd', 'dt', 'dp', 'g']):
                     else:
                         sensor = Sensor(
                             setting[0], int(
