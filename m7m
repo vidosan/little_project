@@ -1,0 +1,1521 @@
+import fileinput
+import itertools
+import os
+import queue
+import struct
+import sys
+import threading
+import time
+import warnings
+from datetime import datetime
+from time import sleep
+import math
+import keyboard
+import numpy as np
+import pandas as pd
+from PyQt5.QtCore import Qt, QDateTime, QTimer, QPoint, QProcess, QRegExp
+from PyQt5.QtGui import QFont, QRegExpValidator
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtWidgets import QAbstractSpinBox, QSlider, QDesktopWidget, QTabWidget, QLineEdit, QButtonGroup, QScrollArea, \
+    QInputDialog
+from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QMainWindow, QHBoxLayout, QTextEdit, QSizePolicy, QGraphicsOpacityEffect, QPushButton, \
+    QCheckBox, QGridLayout, QComboBox
+from PyQt5.QtWidgets import QWidget, QLabel, QDoubleSpinBox, QVBoxLayout
+from ping3 import ping
+from pyModbusTCP.client import ModbusClient
+from pymodbus.constants import Endian
+from pymodbus.payload import BinaryPayloadDecoder
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+class WarningWindow(QApplication):
+    def __init__(self,sometext=''):
+        super().__init__([])
+        self.messageBox = QMessageBox()
+        self.messageBox.setWindowFlag(Qt.WindowStaysOnTopHint)
+        self.messageBox.setWindowTitle("Error")
+        self.messageBox.setText(str(sometext))
+        self.messageBox.setIcon(QMessageBox.Warning)
+        self.messageBox.setFont(QFont("Arial", 23))
+        self.messageBox.setStandardButtons(QMessageBox.Ok)
+        if self.messageBox.exec_() == QMessageBox.Ok:
+            os._exit(0)
+        self.messageBox.show()
+
+def warning_window(sometext):
+    WarningWindow(sometext=sometext).exec_()
+
+IZDELIE = ''
+IMG = 'BG.png'
+setting = "setting1.txt"
+ips = {}
+sensor_size = 14
+hidename = 0
+Vrema = "%H_%M_%S__%d-%m-%y"
+with open(setting) as f:
+    for indx, line in enumerate(f):
+        try:
+            if any(var in line for var in ( 'ips','IZDELIE','sensor_size','hidename')):
+                exec(line)
+        except Exception as e:
+            warning_window(f'{e}\n\n{line}')
+
+new_list_of_dict_values = [list(range(1, chs + 1)) if type(chs) == int else chs for i, chs in
+                           enumerate(list(ips.values()))]
+
+def ipping():
+    for ip in ips.keys():
+        sleep(1/10)
+        if not ping(ip):
+            return ip
+        else:
+            continue
+
+for i in range(3):
+    pings = ipping()
+    if pings == None:
+        break
+    else:
+       warning_window(f"{pings} \n lost connection")
+
+
+def long_function(q):
+    reservlist = {}
+    while True:
+        number_of_channels = 0
+        data = []
+        for key, value in ips.items():
+            index = list(ips.keys()).index(key)
+            client = ModbusClient(host=key, port=502, unit_id=1, auto_open=True)
+            listd = []
+            sleep(1 / 18)
+            for i, ch in enumerate(range(
+                    (new_list_of_dict_values[index][0] - 1) * 2, (new_list_of_dict_values[index][-1]) * 2, 2)):
+                try:
+                    response = client.read_input_registers(ch, reg_nb=2)
+                    decoder = BinaryPayloadDecoder.fromRegisters(
+                        response, Endian.Big, wordorder=Endian.Little).decode_32bit_float()
+                    listd.append(decoder)
+                    reservlist.setdefault(i + number_of_channels, decoder)
+                except Exception:
+                    listd.append(reservlist[i])
+                    continue
+            number_of_channels += len(value) if type(value) == list else value
+            data.append(listd)
+        q.put_nowait(data)
+
+
+def t1live():
+    if t1.is_alive():
+        return qe.get()
+
+
+qe = queue.Queue()
+t1 = threading.Thread(target=long_function, args=[qe])
+t1.start()
+
+
+class Damper(QWidget):
+    def __init__(
+            self,
+            namez='ЗУ',
+            side='G',
+            chr_open=0,
+            chr_close=1,
+            chdv_open=0,
+            chdv_close=1,
+            reg=1,
+            parent=None):
+        super(Damper, self).__init__(parent)
+        self.widgetA = None
+        self.namez = namez
+        self.side = side
+        self.widget = QWidget(self)
+        self.layout = QGridLayout()
+        self.lab = QPushButton(f'{self.namez}')
+        self.lab.setStyleSheet(
+            'font:bold;border-radius: 10px;border: 1px solid black;margin-bottom: 0;text-align: top;')
+        self.widget.setLayout(self.layout)
+        self.widget.setStyleSheet(
+            ".QWidget {border: 1px solid black;border-radius: 25;background-color: rgb(255, 255, 255);}")
+        self.btnUpdate1 = QPushButton()
+        self.btnUpdate1.pressed.connect(self.tzRon)
+        self.btnUpdate1.released.connect(self.tzRoff)
+
+        self.btnUpdate1.setStyleSheet("""
+                QPushButton{
+                background-color: #A61300;
+                border-bottom-left-radius:10px;
+                border-top-right-radius:10px;
+                margin-top: 13px;}
+                }
+               QPushButton:pressed { background-color: #FF2800 }
+                """)
+        self.btnUpdate2 = QPushButton()
+        self.btnUpdate2.pressed.connect(self.tzGon)
+        self.btnUpdate2.released.connect(self.tzGoff)
+        self.btnUpdate2.setStyleSheet("""
+                        QPushButton{
+                        background-color: #007C21;
+                        border-top-left-radius:10px;
+                        border-bottom-right-radius:10px;
+                        margin-top: 13px;
+                        }
+                        QPushButton:pressed { background-color: #64DF85 }
+                        """)
+        self.size0 = 0
+        self.sizebtn = (50 + self.size0, 35 + self.size0)
+        self.layout.setVerticalSpacing(0)
+        self.layout.setHorizontalSpacing(0)
+        self.btnUpdate1.setFixedSize(self.sizebtn[0], self.sizebtn[1])
+        self.btnUpdate2.setFixedSize(self.sizebtn[0], self.sizebtn[1])
+        self.widget.setFixedSize(120 + self.size0 * 2, 60 + self.size0 * 2)
+        self.lab.setFixedSize(100 + self.size0, 25 + self.size0)
+        self.lab.setStyleSheet("{ text-align: center; }")
+        self.layout.addWidget(self.lab, 0, 0, 1, 2)
+        self.layout.addWidget(self.btnUpdate1, 1, 0, 4, 1)
+        self.layout.addWidget(self.btnUpdate2, 1, 1, 4, 1)
+        self.chkb = QCheckBox()
+        self.chkb.setStyleSheet(
+            "QCheckBox::indicator { width: 10; height: 10;}")
+        self.layout.addWidget(self.chkb, 0, 0, 3, 1)
+
+        if self.side == 'V':
+            self.btnUpdate1.setStyleSheet("""QPushButton{
+                background-color: #A61300;
+                border-bottom-left-radius:10px;
+                border-top-right-radius:10px;
+                margin-top: 0px;}
+                }
+               QPushButton:pressed { background-color: #FF2800 }
+                """)
+            self.btnUpdate2.setStyleSheet("""
+                                   QPushButton{
+                                   background-color: #007C21;
+                                   border-top-left-radius:10px;
+                                   border-bottom-right-radius:10px;
+                                   margin-top: 0px;
+                                   }
+                                   QPushButton:pressed { background-color: #64DF85 }
+                                   """)
+            self.widget.setFixedSize(65 + self.size0 * 2, 110 + self.size0 * 2)
+            self.sizebtn = (25 + self.size0, 50 + self.size0)
+            self.btnUpdate1.setFixedSize(self.sizebtn[0], self.sizebtn[1])
+            self.btnUpdate2.setFixedSize(self.sizebtn[0], self.sizebtn[1])
+            self.layout.setHorizontalSpacing(1)
+            self.lab.setFixedSize(25 + self.size0, 95 + self.size0)
+            self.layout.addWidget(self.lab, 0, 1, 2, 1)
+            self.layout.addWidget(self.btnUpdate1, 1, 0, 1, 1)
+            self.layout.addWidget(self.btnUpdate2, 0, 0, 1, 1)
+
+        self.show()
+        self.reg = reg - 1
+        self.ip = list(ips)[self.reg]
+        self.c = (
+            ModbusClient(
+                host=self.ip,
+                port=502,
+                unit_id=1,
+                auto_open=True))
+        self.chdv_open = chdv_open - 1
+        self.chdv_close = chdv_close - 1
+        self.chr_open = chr_open - 1
+        self.chr_close = chr_close - 1
+        self.lab.clicked.connect(self.info)
+        self.moveon = False
+        self.chkb.stateChanged.connect(self.automatvisibl)
+
+    def automatvisibl(self):
+        if self.chkb.isChecked():
+            try:
+                self.widgetA.show()
+            except Exception:
+                self.widgetA = QWidget(dlgMain)
+                self.widgetA.setWindowFlags(Qt.FramelessWindowHint)
+                self.widgetA.setGeometry(
+                    self.x(), int(
+                        self.y() + self.size().height() / 3), 100, 160)
+                if self.side == 'V':
+                    self.widgetA.setGeometry(
+                        int(self.x() + self.size().width() / 3), self.y(), 100, 160)
+
+                self.widgetA.layout = QVBoxLayout()
+                self.widgetA.setLayout(self.widgetA.layout)
+
+                self.comboA = QComboBox()
+                self.comboA.addItems(
+                    [f'{i.name}:   {i.ch}/{i.reg}' for i in dlgMain.ourch])
+
+                self.ustA = QDoubleSpinBox()
+                self.ustA.setDecimals(4)
+                self.ustA.setStepType(QAbstractSpinBox.AdaptiveDecimalStepType)
+
+                self.dopskA = QDoubleSpinBox()
+                self.dopskA.setStepType(
+                    QAbstractSpinBox.AdaptiveDecimalStepType)
+                self.dopskA.setDecimals(4)
+                self.dopskA.setValue(0.5)
+                self.dopskA.setMinimum(0.01)
+
+                self.timesleep = QDoubleSpinBox()
+                self.timesleep.setStepType(
+                    QAbstractSpinBox.AdaptiveDecimalStepType)
+                self.timesleep.setDecimals(4)
+                self.timesleep.setValue(1)
+                self.timesleep.setMinimum(0.01)
+
+                self.timesleepaft = QDoubleSpinBox()
+                self.timesleepaft.setStepType(
+                    QAbstractSpinBox.AdaptiveDecimalStepType)
+                self.timesleepaft.setDecimals(4)
+                self.timesleepaft.setMinimum(1)
+                self.timesleepaft.setValue(4)
+
+                self.limit = QDoubleSpinBox()
+                self.limit.setStepType(
+                    QAbstractSpinBox.AdaptiveDecimalStepType)
+                self.limit.setDecimals(4)
+                self.limit.setValue(12)
+
+                self.chkbA = QCheckBox()
+                self.chkbA.stateChanged.connect(self.automatwork)
+
+                self.widgetA.layout.addWidget(self.comboA)
+                self.widgetA.layout.addWidget(self.ustA)
+                self.widgetA.layout.addWidget(self.dopskA)
+                self.widgetA.layout.addWidget(self.timesleep)
+                self.widgetA.layout.addWidget(self.timesleepaft)
+                self.widgetA.layout.addWidget(self.limit)
+                self.widgetA.layout.addWidget(self.chkbA)
+                self.widgetA.show()
+        else:
+            self.widgetA.hide()
+
+    def datchik(self):
+        for i in dlgMain.ourch:
+            if self.comboA.currentText()[
+               :self.comboA.currentText().find(':')] in i.name:
+                return i
+
+    def automatwork(self):
+        if self.chkbA.isChecked():
+            self.condition = False
+            threading.Thread(target=self.p_auto).start()
+        else:
+            self.condition = True
+
+    def low(self):
+        for step in range(1, 10):
+            step_value = self.ustA.value() / 2 ** step
+            if self.dadata < step_value:
+                return self.timesleep.value() / 2 ** (step - 1)
+        return self.timesleep.value()
+
+    def up(self):
+        for step in range(10, 0, -1):
+            threshold = self.ustA.value() * (1 - 1 / 2 ** step)
+            if self.dadata >= threshold:
+                return self.timesleep.value() / 2 ** step
+        return self.timesleep.value()
+
+    def p_auto(self, q):
+        try:
+            while self.condition is False:
+                self.da = self.datchik()
+                self.diapozon = np.arange(
+                    self.ustA.value() -
+                    self.dopskA.value(),
+                    self.ustA.value() +
+                    self.dopskA.value(),
+                    0.001,
+                    dtype=float)
+                self.diapozon = [round(n, 3) for n in self.diapozon]
+                self.dadata = float("{:.3f}".format(
+                    t1live()[self.da.reg][new_list_of_dict_values[self.da.reg].index(self.da.ch)]))
+                if self.dadata < self.diapozon[0] and self.dadata > 0:
+                    self.tzGon()
+                    sleep(self.low())
+                    self.tzGoff()
+                    sleep(self.timesleepaft.value())
+                elif self.dadata > self.diapozon[-1]:
+                    self.tzRon()
+                    sleep(self.up())
+                    self.tzRoff()
+                    sleep(self.timesleepaft.value())
+                elif self.dadata >= self.limit.value():
+                    self.tzRon()
+                    sleep(self.timesleepaft.value())
+                    self.tzRoff()
+                    sleep(self.timesleepaft.value())
+                    continue
+        except Exception:
+            sleep(1)
+
+    def update_dadata(self):
+        self.da = self.datchik()
+        self.set_diapozon()
+        self.dadata = float("{:.3f}".format(
+            t1live()[self.da.reg][new_list_of_dict_values[self.da.reg].index(self.da.ch)]))
+
+    def set_diapozon(self):
+        self.diapozon = np.arange(self.ustA.value() - self.dopskA.value(),
+                                  self.ustA.value() + self.dopskA.value(),
+                                  0.001, dtype=float)
+        self.diapozon = [round(n, 3) for n in self.diapozon]
+
+    def perform_action(self, action_function, sleep_function=None):
+        action_function()
+        if sleep_function:
+            sleep(sleep_function())
+        else:
+            sleep(self.timesleepaft.value())
+        action_function.off()
+
+    def colorzaslonka(self):
+        try:
+            chdv_open = self.c.read_discrete_inputs(self.chdv_open, 1)[0]
+            chdv_close = self.c.read_discrete_inputs(self.chdv_close, 1)[0]
+
+            if chdv_open:
+                color = '#00FF00'  # green
+            elif chdv_close:
+                color = '#FF0000'  # red
+            else:
+                color = '#FFFF00'  # yellow
+
+            self.lab.setStyleSheet(
+                f"""font:bold;border-radius: 10px;border: 1px solid black;
+                                    margin-bottom: 0;background-color: {color};text-align: center;""")
+            self.c.close()
+        except Exception:
+            pass
+
+    def tzGon(self):
+        threading.Thread(target=self.evt_btnUpdate_green_on).start()
+
+    def tzGoff(self):
+        threading.Thread(target=self.evt_btnUpdate_green_off).start()
+
+    def tzRon(self):
+        threading.Thread(target=self.evt_btnUpdate_red_on).start()
+
+    def tzRoff(self):
+        threading.Thread(target=self.evt_btnUpdate_red_off).start()
+
+    def evt_btnUpdate_green_on(self):
+        sleep(1 / 50)
+        self.c.write_multiple_coils(self.chr_open, [1])
+        self.lab.setStyleSheet(
+            'font:bold;border-radius: 10px;border: 1px solid black;'
+            'margin-bottom: 0;background-color: #2E8B57 ;text-align: center;')
+        self.c.close()
+
+    def evt_btnUpdate_green_off(self):
+        sleep(1 / 50)
+        self.c.write_multiple_coils(self.chr_open, [0])
+        self.c.close()
+        self.colorzaslonka()
+
+    def evt_btnUpdate_red_on(self):
+        sleep(1 / 50)
+        self.c.write_multiple_coils(self.chr_close, [1])
+        self.lab.setStyleSheet(
+            'font:bold;border-radius: 10px;border: 1px solid black;'
+            'margin-bottom: 0;background-color:#B22222 ;text-align: center;')
+        self.c.close()
+
+    def evt_btnUpdate_red_off(self):
+        sleep(1 / 50)
+        self.c.write_multiple_coils(self.chr_close, [0])
+        self.c.close()
+        self.colorzaslonka()
+
+    def mousePressEvent(self, evt):
+        if self.moveon:
+            self.oldPos = evt.globalPos()
+
+    def mouseMoveEvent(self, evt):
+        if self.moveon:
+            delta = QPoint(evt.globalPos() - self.oldPos)
+            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self.oldPos = evt.globalPos()
+            with fileinput.FileInput(setting, inplace=True,
+                                     backup='.bak') as f:
+                for line in f:
+                    if self.namez in line and '<=>' not in line:
+                        replacement_text = (
+                                line[:line.rfind(' (')] + f' ({self.x()} {self.y()})\n')
+                        print(line.replace(line, replacement_text), end='')
+                    else:
+                        print(line, end='')
+
+    def info(self):
+        self.w = AnotherWindow()  # ,chr_open=0, chr_close=1, chdv_open=0, chdv_close=1,
+        self.w.label1.setText(f'name {self.namez}')
+        self.w.label2.setText(
+            f'chr_op {self.chr_open} ,chr_cl {self.chr_close} ')
+        self.w.label3.setText(
+            f'chdv_op {str(self.chdv_open)} ,chdv_cl {str(self.chdv_close)}')
+        self.w.label4.setText(f'{self.pos()}')
+        self.w.slider.valueChanged.connect(self.scaletext)
+        self.wi = self.widget.width()
+        self.he = self.widget.height()
+        self.wi_lab = self.lab.width()
+        self.he_lab = self.lab.height()
+        self.wi_b1 = self.btnUpdate1.width()
+        self.he_b1 = self.btnUpdate1.height()
+        self.wi_b2 = self.btnUpdate2.width()
+        self.he_b2 = self.btnUpdate2.height()
+        self.w.show()
+
+    def scaletext(self, value):
+        custom_font = QFont()
+        custom_font.setPointSize(7 + value // 2)
+        self.setFixedSize(self.width() + value,
+                          int(self.height() + value / 15))
+        self.lab.setFont(custom_font)
+        self.lab.setFixedSize(self.wi_lab + value, self.he_lab + value)
+        self.widget.setFixedSize(self.wi + value * 2, self.he + value * 2)
+        self.btnUpdate1.setFixedSize(
+            int(self.wi_b1 + value / 2), int(self.he_b1 + value / 2))
+        self.btnUpdate2.setFixedSize(
+            int(self.wi_b2 + value / 2), int(self.he_b2 + value / 2))
+
+    #   self.layout.setFixedSize(self.layout.height()+value,self.layout.width()+value)
+    #        self.w.show()
+
+    def __str__(self):
+        return f"Name:{self.namez}"
+
+
+class AnotherWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFont(QFont("Arial", 12))
+
+        self.layoutAW = QVBoxLayout()
+        self.label1 = QLabel()
+        self.label2 = QLabel()
+        self.label3 = QLabel()
+        self.label4 = QLabel()
+        self.slider = QSlider()
+        self.slider.setOrientation(Qt.Horizontal)
+        self.slider.setRange(-100, 500)
+
+        self.chk = QCheckBox()
+        self.chklbl = QLabel()
+        self.chklbl.setText('Name hide')
+        self.layoutAW.addWidget(self.chk)
+        self.layoutAW.addWidget(self.chklbl)
+
+        self.layoutAW.addWidget(self.slider)
+        self.layoutAW.addWidget(self.label1)
+        self.layoutAW.addWidget(self.label2)
+        self.layoutAW.addWidget(self.label3)
+        self.layoutAW.addWidget(self.label4)
+
+        self.setLayout(self.layoutAW)
+
+
+class Sensor(QWidget):
+    def __init__(self, name='♥', ch=1, clr='bl', side_name='l', bit_depth=2, reg=1, amendment=0.0, parent=None):
+        super(Sensor, self).__init__(parent)
+        self.name = name
+        self.reg = reg - 1
+        self.ch = ch
+        self.amendment = amendment
+        self.bit_depth = bit_depth
+        self.l1 = QPushButton(self.name)
+        self.l1.setFont(QFont("Arial", 13))
+        self.l1.setStyleSheet('border : 5;background: transparent;')
+        self.l2 = QLabel('♣')
+        self.l2.setAlignment(Qt.AlignCenter)
+
+        self.clr = clr
+        self.ip = list(ips)[self.reg]
+        self.c = (
+            ModbusClient(
+                host=self.ip,
+                port=502,
+                unit_id=1,
+                auto_open=True))
+        self.side_name = side_name
+        self.layoutside(self.side_name)
+        self.l2.setFont(QFont('Times', 18, weight=QFont.Bold))
+        self.l2.setStyleSheet(self.bge())
+
+        self.l1.clicked.connect(self.info)
+        self.moveon = False
+        self.scaletext(sensor_size)
+        self.hidename(hidename)
+
+    #     self.show()
+
+    def bge(self):
+        colors = {
+            'si': '192,192,192',
+            'wh': '255,255,255',
+            'fu': '255,0,255',
+            'pu': '238,130,238',
+            're': '255,160,137',
+            'ma': '128,0,0',
+            'ye': '255,255,0',
+            'ol': '128,128,0',
+            'li': '0,255,0',
+            'gr': '50,205,50',
+            'aq': '0,255,255',
+            'te': '0,128,128',
+            'bl': '153,153,255',
+            'na': '0,0,128'
+        }
+
+        if self.clr not in colors:
+            return f'.QLabel{{background-color: rgb({self.clr});margin:1px;border:1px solid rgb(0,0,0);border-radius: 10px;}}'
+        else:
+            return f'.QLabel{{background-color: rgb({colors[self.clr]});margin:1px;border:1px solid rgb(0,0,0);border-radius: 10px;}}'
+
+    def layoutside(self, side_name):
+        if side_name.lower() == 'l':
+            self.setGeometry(self.x(), self.y(), 150, 20)
+            self.layout = QHBoxLayout(self)
+            self.layout.addWidget(self.l1)
+            self.layout.addWidget(self.l2)
+        elif side_name.lower() == 't':
+            self.setGeometry(self.x(), self.y(), 110, 50)
+            self.layout = QVBoxLayout(self)
+            self.layout.addWidget(self.l1)
+            self.layout.addWidget(self.l2)
+        elif side_name.lower() == 'r':
+            self.setGeometry(self.x(), self.y(), 150, 20)
+            self.layout = QHBoxLayout(self)
+            self.layout.addWidget(self.l2)
+            self.layout.addWidget(self.l1)
+        elif side_name.lower() == 'b':
+            self.setGeometry(self.x(), self.y(), 110, 50)
+            self.layout = QVBoxLayout(self)
+            self.layout.addWidget(self.l2)
+            self.layout.addWidget(self.l1)
+
+    def mousePressEvent(self, evt):
+        if self.moveon:
+            self.oldPos = evt.globalPos()
+
+    def mouseMoveEvent(self, evt):
+        if self.moveon:
+            delta = evt.globalPos() - self.oldPos
+            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self.oldPos = evt.globalPos()
+            with open(setting, 'r') as f:
+                lines = f.readlines()
+            with open(setting, 'w') as f:
+                for line in lines:
+                    if self.name in line:
+                        line = f'{line[:line.rfind(" (")]} ({self.x()} {self.y()})\n'
+                    f.write(line)
+
+    def poschange(self):
+        self.layout.replaceWidget(self.l2, self.l1)
+        self.show()
+
+    def info(self):
+        self.w = AnotherWindow()
+        self.w.label1.setText(f'{self}')
+        self.w.label4.setText(f'{self.pos()}')
+        self.w.slider.valueChanged.connect(self.scaletext)
+        self.w.chk.stateChanged.connect(self.hidename)
+        self.w.show()
+
+    def hidename(self, h):
+        self.l1.hide() if h == 1 else self.l1.show()
+
+    def scaletext(self, value):
+        self.l2.setFont(QFont('Times', 14 + value, weight=QFont.Bold))
+        self.l2.setFixedSize(100 + value * 5, 35 + value)
+        self.setFixedSize(150 + value * 5, 70 + value * 2)
+
+    def __str__(self):
+        return f"{self.name}  ch {self.ch}  reg {self.reg + 1}"
+
+
+class Translate(QPushButton):
+    def __init__(self, z1, z2, zslp, parent=None):
+        super(QPushButton, self).__init__(parent)
+        self.setGeometry(parent.frameGeometry().width(
+        ) - 200, parent.frameGeometry().height() - 500 + 20 * int(z1[-1]), 150, 30)
+        self.setText(f' {z1}<=>{z2}')
+        self.setFont(QFont("Fira Mono Bold", 13))
+        self.setStyleSheet(
+            "QPushButton {padding-top:7px;background-color : lightgreen;font:bold;border-radius: 10px;border: 1px solid black;margin-bottom: 0}"
+            "QPushButton:pressed { background-color: red }")
+        for i in zslp:
+            if z1 in i.namez:
+                self.z1 = i
+            elif z2 in i.namez:
+                self.z2 = i
+        self.clicked.connect(self.tz)
+        self.show()
+
+    def tz(self):
+        self.setEnabled(False)
+        threading.Thread(
+            target=self.rearrangement,
+            args=[
+                queue.Queue(),
+                self.z1,
+                self.z2]).start()
+
+    def rearrangement(self, q, z1, z2):
+        try:
+            if z1.lab.styleSheet() == 'font:bold;border-radius: 10px;border: 1px solid black;margin-bottom: 0;background-color: #FF0000 ;text-align: center;':
+                z1.tzGon()
+                z2.tzRon()
+                sleep(10)
+                z1.tzGoff()
+                z2.tzRoff()
+            else:
+                z2.tzGon()
+                z1.tzRon()
+                sleep(10)
+                z2.tzGoff()
+                z1.tzRoff()
+            self.setEnabled(True)
+        except Exception:
+            warning_window('Проверьте концевики')
+
+
+class Formula(Sensor, QWidget):
+    def __init__(self, name, mathematics, clr, side_name, bit_depth=1):
+        super().__init__()
+        self.name = name
+        self.clr = clr
+        self.l2.setStyleSheet(self.bge())
+        self.l1.setText(self.name)
+        self.mathematics = mathematics
+        self.bit_depth = bit_depth
+        self.ls(side_name)
+        self.show()
+
+    def ls(self, side_name):
+        if side_name.lower() == 'r':
+            self.layout.insertWidget(1, self.l1)
+        if side_name.lower() == 'l':
+            self.layout.insertWidget(1, self.l2)
+
+    def __str__(self):
+        return f'{self.name},{self.mathematics}'
+
+
+class Furnace(QSlider):
+    def __init__(self, name='♥', ae=1, reg=1, parent=None):
+        super(Furnace, self).__init__(parent)
+        self.ae = ae - 1
+        self.reg = reg - 1
+        self.ip = list(ips)[self.reg]
+        self.c = ModbusClient(
+            host=self.ip,
+            port=502,
+            unit_id=1,
+            auto_open=True)
+        self.name = name
+        self.setGeometry(parent.frameGeometry().width(
+        ) - 200 + self.ae * 30, 50, 30, int(parent.frameGeometry().height() / 2))
+        self.lb = QLabel(self.parent())
+        self.lb.setFont(QFont('Arial', 10))
+        self.lb.move(parent.frameGeometry().width() - 205 + self.ae * 30, 20)
+        self.lb.show()
+        self.setSingleStep(10)
+        self.setRange(0, 20000)
+        self.valueChanged.connect(lambda v: self.lb.setText(str(v / 1000)))
+        self.sliderReleased.connect(self.tz)
+        self.show()
+
+    def tz(self):
+        x = self.value()
+        qez = queue.Queue()
+        threading.Thread(target=self.signal, args=[qez, x]).start()
+
+    def signal(self, q, value):
+        f = value / 1000
+        v = struct.unpack('>l', struct.pack('>f', f))[0]
+        x = [(v & 0xffff), (v >> 16)]
+        self.c.write_multiple_registers(self.ae, x)
+        self.c.close()
+
+
+class Setting(QWidget):
+    __instance = None
+
+    @staticmethod
+    def getInstance():
+        if Setting.__instance == None:
+            Setting()
+        return Setting.__instance
+
+    def __init__(self):
+        super().__init__()
+        if Setting.__instance == None:
+            Setting.__instance = self
+        self.setFont(QFont("Arial", 14))
+        self.setWindowTitle('Настройки')
+        self.setStyleSheet('''QPushButton {font-size: 14pt;background-color: #A3C1DA; border-radius: 8px;}
+                              QPushButton:hover {background-color: #49B69F;}
+                              QPushButton:pressed {background-color: #5549B6;}''')
+        screen = QDesktopWidget().screenGeometry()
+        width = screen.width()
+        height = screen.height()
+        self.checked_items=[]
+
+        window = QWidget()
+        layout1 = QGridLayout(window)
+
+        self.cb_name = QComboBox(self)
+        self.cb_name.setToolTip("Имя")
+        self.cb_name.addItems(['DA', 'DD', 'dP', 'DT', 'G','своё имя'])
+        self.cb_name.currentIndexChanged.connect(self.setname)
+        self.cb_namenumber = QComboBox(self)
+        self.cb_channel = QComboBox(self)
+        self.cb_bit_depth = QComboBox(self)
+        for i in range(1, 101):
+            self.cb_namenumber.addItem(str(i))
+            self.cb_channel.addItem(str(i))
+            self.cb_bit_depth.addItem(str(i))
+        self.cb_color = QComboBox(self)
+        self.cb_color.addItems(['Синий', 'Красный', 'Зелёный', 'Орхидея', 'Cеребряный', 'Белый', 'Фуксия', 'Малиновый',
+                                'Желтый', 'Оливка', 'Лайм', 'Аква', 'Бирюзовый', 'Tемно-синий', 'Прозрачный'])
+
+        self.cb_name_side = QComboBox(self)
+        self.cb_name_side.addItems(['Лево', 'Право', 'Верх', 'Низ'])
+        self.cb_bit_depth.setCurrentIndex(2)
+
+        self.cb_reg = QComboBox(self)
+        for i in ips:
+            self.cb_reg.addItem(str(i))
+        self.cb_pos_x = QComboBox(self)
+        self.cb_pos_y = QComboBox(self)
+        self.deepxy(width,height,self.cb_pos_x,self.cb_pos_y)
+
+        layout1.addWidget(QLabel('Имя'), 0, 0)
+        layouth1_1 = QHBoxLayout()
+        layouth1_1.addWidget(self.cb_name)
+        layouth1_1.addWidget(self.cb_namenumber)
+        layout1.addLayout(layouth1_1, 0, 1)
+
+        layout1.addWidget(QLabel('Канал'), 1, 0)
+        layout1.addWidget(self.cb_channel, 1, 1)
+        layout1.addWidget(QLabel('Цвет'))
+        layout1.addWidget(self.cb_color)
+        layout1.addWidget(QLabel('Расположение имени'))
+        layout1.addWidget(self.cb_name_side)
+        layout1.addWidget(QLabel('Разрядность'))
+        layout1.addWidget(self.cb_bit_depth)
+        layout1.addWidget(QLabel('Регистратор'), 5, 0)
+        layout1.addWidget(self.cb_reg, 5, 1)
+        layout1.addWidget(QLabel('Позиция по X и Y'))
+        layouth1_2 = QHBoxLayout()
+        layouth1_2.addWidget(self.cb_pos_x)
+        layouth1_2.addWidget(self.cb_pos_y)
+        layout1.addLayout(layouth1_2, 6, 1)
+
+        confirm1 = QPushButton("Подтвердить")
+        layout1.addWidget(confirm1,7,0,2,0)
+        confirm1.clicked.connect(lambda: self.on_button_clicked('sensor'))
+
+        window2 = QWidget()
+        layout2 = QVBoxLayout()
+        window2.setLayout(layout2)
+
+        delete = QPushButton('Удалить')
+        delete.clicked.connect(self.deletesensor)
+        hide = QPushButton('Скрыть/Отбразить')
+        hide.clicked.connect(self.hidewidget)
+        layout2_1 = QHBoxLayout()
+
+        layout2_1.addWidget(hide)
+        layout2_1.addWidget(delete)
+        layout2.addLayout(layout2_1)
+
+        widget_2 = QWidget()
+        layout = QVBoxLayout()
+        scroll = QScrollArea()
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidgetResizable(True)
+        scrollContent = QWidget(scroll)
+        self.scrollLayout = QVBoxLayout(scrollContent)
+        f=self.get_name()
+        for line in f:
+            if line.count('#') >= 2:
+                continue
+            self.scrollLayout.addWidget(QCheckBox(line))
+        scroll.setWidget(scrollContent)
+        layout.addWidget(scroll)
+        widget_2.setLayout(layout)
+        widget_2.setFont(QFont('Arial',12))
+        layout2.addWidget(widget_2)
+
+
+
+        window3 = QWidget()
+        layout3 = QVBoxLayout()
+        window3.setLayout(layout3)
+        self.input3 = QLineEdit()
+        self.input3.setText('69.5*sqrt(342.15*DA1*dP1*10000)/(273+DT1)')
+        self.input3.setPlaceholderText('Формула')
+        self.input3_1 = QLineEdit()
+        self.input3_1.setPlaceholderText('имя')
+        self.cb_bit_depth_math = QComboBox()
+        for i in range(0, 10):
+            self.cb_bit_depth_math.addItem(str(i))
+        self.cb_bit_depth_math.setCurrentIndex(2)
+        self.cb_color_math = QComboBox()
+        self.cb_color_math.addItems(['Синий', 'Красный', 'Зелёный', 'Орхидея', 'Cеребряный', 'Белый', 'Фуксия', 'Малиновый',
+                                'Желтый', 'Оливка', 'Лайм', 'Аква', 'Бирюзовый', 'Tемно-синий', 'Прозрачный'])
+        self.cb_name_side_math = QComboBox()
+        self.cb_name_side_math.addItems(['Лево', 'Право', 'Верх', 'Низ'])
+        self.cb_pos_x_math= QComboBox()
+        self.cb_pos_y_math= QComboBox()
+        self.deepxy(width,height,self.cb_pos_x_math,self.cb_pos_y_math)
+
+        layout3_h1 = QHBoxLayout()
+        layout3_h1.addWidget(QLabel('Разрядность'))
+        layout3_h1.addWidget(self.cb_bit_depth_math)
+        layout3_h2 = QHBoxLayout()
+        layout3_h2.addWidget(QLabel('Расположение имени'))
+        layout3_h2.addWidget(self.cb_name_side_math)
+        layout3_h3 = QHBoxLayout()
+        layout3_h3.addWidget(QLabel('Цвет'))
+        layout3_h3.addWidget(self.cb_color_math)
+
+        layout3_h4=QHBoxLayout()
+        layout3_h4.addWidget(QLabel('Расположение по X и Y'))
+        layout3_h4.addWidget(self.cb_pos_x_math)
+        layout3_h4.addWidget(self.cb_pos_y_math)
+
+        layout3.addWidget(self.input3)
+        layout3.addWidget(self.input3_1)
+        layout3.addLayout(layout3_h1)
+        layout3.addLayout(layout3_h2)
+        layout3.addLayout(layout3_h3)
+        layout3.addLayout(layout3_h4)
+
+        confirm3 = QPushButton("Подтвердить")
+        layout3.addWidget(confirm3)
+        confirm3.clicked.connect(self.addformula)
+
+        window4 = QWidget()
+        layout4 = QVBoxLayout()
+        window4.setLayout(layout4)
+        self.input4 = QLineEdit()
+        self.input4.setPlaceholderText('192.168.201.1')
+        validator = QRegExpValidator(QRegExp("[0-9\\.]*"))
+        self.input4.setValidator(validator)
+
+        self.cb_ip = QComboBox()
+        self.cb_ip.addItems(ips)
+
+        self.cb_ipch1 = QComboBox()
+        for i in range(0, 20):
+            self.cb_ipch1.addItem(str(i))
+
+        self.cb_ipch2 = QComboBox()
+        for i in range(1, 21):
+            self.cb_ipch2.addItem(str(i))
+        self.cb_ipch2.setCurrentIndex(13)
+        self.cb_ipch1.currentIndexChanged.connect(self.check_values)
+
+        layout4_1 = QHBoxLayout()
+        layout4_1.addWidget(QLabel('Число каналов'))
+        layout4_2 = QHBoxLayout()
+        layout4_2.addWidget(self.cb_ipch1)
+        layout4_2.addWidget(self.cb_ipch2)
+        layout4_1.addLayout(layout4_2)
+
+        btn4sed = QPushButton('Отправить ip')
+        btn4sed.clicked.connect(self.send_ip)
+        btn4del = QPushButton('удалить ip')
+        btn4del.clicked.connect(lambda: self.delip(self.cb_ip.currentText()))
+
+        layout4.addWidget(self.input4)
+        layout4.addLayout(layout4_1)
+        layout4.addWidget(btn4sed)
+        layout4.addWidget(self.cb_ip)
+        layout4.addWidget(btn4del)
+
+        window5=QWidget()
+        layout5 = QGridLayout()
+        window5.setLayout(layout5)
+        self.cb_name_ru=QComboBox()
+        self.cb_name_ru.addItems( ['RU', 'ZU','Furn'])
+        self.cb_orientate = QComboBox()
+        self.cb_orientate.addItems( ['V', 'H'])
+        self.cb_name_runumber = QComboBox()
+        self.cb_chr_open = QComboBox()
+        self.cb_chr_close = QComboBox()
+        self.cb_chdv_open = QComboBox()
+        self.cb_chdv_close = QComboBox()
+        self.cb_reg_ru = QComboBox()
+
+        self.cb_pos_x_ru = QComboBox()
+        self.cb_pos_y_ru = QComboBox()
+        for i in range(1, 101):
+            self.cb_name_runumber.addItem(str(i))
+            self.cb_chr_open.addItem(str(i))
+            self.cb_chr_close.addItem(str(i))
+            self.cb_chdv_open.addItem(str(i))
+            self.cb_chdv_close.addItem(str(i))
+            self.cb_reg_ru.addItem(str(i))
+        self.deepxy(width,height,self.cb_pos_x_ru,self.cb_pos_y_ru)
+
+        self.cb_chr_close.setCurrentIndex(1)
+        self.cb_chdv_close.setCurrentIndex(1)
+
+        layout5.addWidget(QLabel("Имя"), 0, 0)
+        layout5_1 = QHBoxLayout()
+        layout5_1.addWidget(self.cb_name_ru)
+        layout5_1.addWidget(self.cb_name_runumber)
+        layout5.addLayout(layout5_1,0,1)
+
+        self.oritntation=QLabel("Ориетирование")
+        layout5.addWidget(self.oritntation, 1, 0)
+        layout5.addWidget(self.cb_orientate, 1, 1)
+
+        self.chr_open=(QLabel("Канал откр"))
+        layout5.addWidget(self.chr_open, 2, 0)
+        layout5.addWidget(self.cb_chr_open)
+
+        self.chr_close = (QLabel("Канал закр"))
+        layout5.addWidget(self.chr_close, 3, 0)
+        layout5.addWidget(self.cb_chr_close)
+
+        self.chdv_open = (QLabel("Концевик откр"))
+        layout5.addWidget(self.chdv_open, 4, 0)
+        layout5.addWidget(self.cb_chdv_open)
+
+        self.chdv_close = (QLabel("Концевик закр"))
+        layout5.addWidget(self.chdv_close, 5, 0)
+        layout5.addWidget(self.cb_chdv_close)
+
+        layout5.addWidget(QLabel("Регистратор"),6, 0)
+        layout5.addWidget(self.cb_reg_ru)
+
+        layout5.addWidget(QLabel("Положение по X и Y"), 7, 0)
+        layout5_2=QHBoxLayout()
+
+        layout5_2.addWidget(self.cb_pos_x_ru)
+        layout5_2.addWidget(self.cb_pos_y_ru)
+        layout5.addLayout(layout5_2,7,1)
+        self.cb_name_ru.currentIndexChanged.connect(self.Furn)
+
+        confirm5=QPushButton('Подтвердить')
+        confirm5.clicked.connect(lambda: self.on_button_clicked('Furn') if 'Furn' in self.cb_name_ru.currentText() else self.on_button_clicked('RU'))
+        layout5.addWidget(confirm5,9,0,2,0)
+
+        window6 = QWidget()
+        layout6 = QGridLayout()
+        window6.setLayout(layout6)
+        self.input6 = QLineEdit()
+        self.input6.setPlaceholderText('Изделие')
+        self.input6_b=QPushButton('add_shem')
+        self.input6_b.clicked.connect(lambda :self.setting('IZDELIE'))
+        self.cb_size=QComboBox()
+        for i in range(1,35):
+            self.cb_size.addItem(str(i))
+        self.cb_size.setCurrentIndex(8)
+        self.cb_size_b=QPushButton('set_size')
+        self.cb_size_b.clicked.connect(lambda :self.setting('sensor_size'))
+
+        self.ckhidename= QComboBox()
+        self.ckhidename.addItems([str(0),str(1)])
+        self.ckhidename.setCurrentIndex(0)
+        self.ckhidename_b = QPushButton('hide')
+        self.ckhidename_b.clicked.connect(lambda :self.setting('hidename'))
+
+
+        layout6.addWidget(QLabel('Наименование изделия'))
+        layout6.addWidget(self.input6)
+        layout6.addWidget( self.input6_b)
+        layout6.addWidget(QLabel('Расмер сенсесор'))
+        layout6.addWidget(self.cb_size)
+        layout6.addWidget(self.cb_size_b)
+        layout6.addWidget(QLabel('Cкрыть все имена'))
+        layout6.addWidget( self.ckhidename)
+        layout6.addWidget( self.ckhidename_b)
+
+
+        layout = QVBoxLayout()
+        layout.addWidget(QWidget())
+        tabs = QTabWidget()
+        tabs.setFont(QFont('Arial', 14))
+        tabs.setStyleSheet("QTabWidget::pane { border-top: 2px solid #C2C7CB; }"
+                              "QTabBar::tab { height: 30px;  border-top-left-radius: 10px; border-top-right-radius: 10px;margin-right:15px; }"
+                              "QTabBar::tab:hover {background-color: #49B69F;}"
+                              "QTabBar::tab:selected { background-color: #A3C1DA;color:white ; border-top-left-radius: 10px; border-top-right-radius: 10px;}"
+                              "QLabel {font-size: 14pt;}"
+                              "QComboBox {font-size: 14pt;}"
+                              "QLineEdit {font-size: 14pt;}"
+                           """QPushButton {font-size: 14pt;background-color: #A3C1DA; border-radius: 8px;}
+                              QPushButton:hover {background-color: #49B69F;}
+                              QPushButton:pressed {background-color: #5549B6;}
+                              
+                              """)
+
+        tabs.addTab(window, "Добавление")
+        tabs.addTab(window2, "Скрыть/Удаление")
+        tabs.addTab(window3, "Математика")
+        tabs.addTab(window4, "Добавление/удаление IP")
+        tabs.addTab(window5, "Добавление заслоки и печи")
+        tabs.addTab(window6, "Настройка")
+
+
+        layout = QVBoxLayout()
+        layout.addWidget(tabs)
+        btnreboot = QPushButton('Перезагрузка')
+        btnreboot.clicked.connect(self.reboots)
+        layout.addWidget(btnreboot)
+        custom_font = QFont()
+        custom_font.setWeight(18)
+
+        self.setLayout(layout)
+    def setting(self,too):
+        with open(setting, 'r') as file:
+            lines = file.readlines()
+            with open(setting, 'w') as f:
+                for line in lines:
+                    if 'IZDELIE' in line and too=='IZDELIE':
+                        f.write(f'IZDELIE = \"{self.input6.text()}\"\n')
+                        continue
+                    if 'sensor_size' in line and too=='sensor_size':
+                        f.write(f'sensor_size={self.cb_size.currentText()}\n')
+                        continue
+                    if 'hidename' in line and too=='hidename':
+                        f.write(f'hidename={self.ckhidename.currentText()}\n')
+                        continue
+                    f.write(line)
+
+    def setname(self):
+        if 'своё имя' in self.cb_name.currentText():
+            text, okpressed = QInputDialog.getText(None,"Имя", "Имя датчика", QLineEdit.Normal, "")
+            if okpressed and text != '':
+                self.cb_name.addItem(text)
+                self.cb_name.setCurrentIndex(self.cb_name.count() - 1)
+
+    def Furn(self):
+        if 'Furn' in self.cb_name_ru.currentText():
+            self.cb_orientate.hide()
+            self.cb_chr_open.hide()
+            self.cb_chr_close.hide()
+            self.cb_chdv_open.hide()
+
+            self.oritntation.hide()
+            self.chr_close.hide()
+            self.chr_open.hide()
+            self.chdv_open.hide()
+
+            self.cb_chdv_close.clear()
+            self.cb_chdv_close.addItems([str(i) for i in range(1, 100,2)])
+            self.chdv_close.setText('Канал печи')
+        else:
+            self.cb_orientate.show()
+            self.cb_chr_open.show()
+            self.cb_chr_close.show()
+            self.cb_chdv_open.show()
+
+            self.oritntation.show()
+            self.chr_close.show()
+            self.chr_open.show()
+            self.chdv_open.show()
+
+            self.cb_chdv_close.clear()
+            self.cb_chdv_close.addItems([str(i) for i in range(1, 100)])
+            self.cb_chdv_close.setCurrentIndex(1)
+
+            self.chdv_close.setText("Концевик закр")
+
+    def deepxy(self,width,height,xpos,ypos):
+        for i in range(1, width):
+            xpos.addItem(str(i))
+        xpos.setCurrentIndex(int(width / 2))
+
+        for i in range(1, height):
+            ypos.addItem(str(i))
+        ypos.setCurrentIndex(int(height / 2))
+
+    def hidewidget(self):
+        with open(setting, 'r') as file:
+            data = file.readlines()
+        for i in range(self.scrollLayout.count()):
+            if self.scrollLayout.itemAt(i).widget().isChecked():
+                self.checked_items.append(self.scrollLayout.itemAt(i).widget().text())
+        data = ['#' + line if line in self.checked_items and '#' not in line else line[1:] if line in self.checked_items and '#' in line else line for line in data]
+        with open(setting, 'w') as file:
+            file.writelines(data)
+        self.checked_items.clear()
+    def deletesensor(self):
+        with open(setting, "r") as f:
+            lines = f.readlines()
+        for i in range(self.scrollLayout.count()):
+            if self.scrollLayout.itemAt(i).widget().isChecked():
+                self.checked_items.append(self.scrollLayout.itemAt(i).widget().text())
+        with open(setting, 'w') as f:
+            for line in lines:
+                if line in self.checked_items:
+                    continue
+                f.write(line)
+        self.checked_items.clear()
+    def addformula(self):
+        clr = {'Синий': 'bl', 'Красный': 're', 'Зелёный': 'gr', 'Cеребряный': 'si', 'Белый': 'wh', 'Фуксия': 'fu',
+               'Орхидея': 'pu',
+               'Малиновый': 'ma', 'Желтый': 'ye', 'Оливка': 'ol', 'Лайм': 'li', 'Аква': 'aq', 'Бирюзовый': 'te',
+               'Tемно-синий': 'na', 'Прозрачный': 'x'}.get(self.cb_color_math.currentText(), 'x')
+        side = {'Лево': 'l', 'Право': 'r', 'Верх': 't', 'Низ': 'b'}.get(self.cb_name_side.currentText(), 'transparent')
+        if self.input3_1.text()=='':
+            self.input3_1.setText('math')
+        with open(setting, 'a') as f:
+            f.write(f'Math {self.input3_1.text()} {self.input3.text()} {clr} {side} {self.cb_bit_depth_math.currentText()} ({self.cb_pos_x_math.currentText()} {self.cb_pos_y_math.currentText()})')
+
+    def check_values(self):
+        if int(self.cb_ipch1.currentText()) > int(self.cb_ipch2.currentText()):
+            self.cb_ipch1.setCurrentIndex(self.cb_ipch2.currentIndex())
+
+    def send_ip(self):
+        with open(setting, 'r') as f:
+            data = f.readlines()
+        with open(setting, 'w') as f:
+            for line in data:
+                if 'ips = {' in line:
+                    if self.cb_ipch1.currentText() == '0':
+                        line = line.replace('}', f',\'{self.input4.text()}\':{self.cb_ipch2.currentText()}}}')
+                    elif self.cb_ipch1.currentText() !='0':
+                        line = line.replace('}', f',\'{self.input4.text()}\':[{self.cb_ipch1.currentText()},{self.cb_ipch2.currentText()}]}}')
+                f.write(line)
+
+    def delip(self, ip):
+        my_string = ''
+        with open(setting, 'r') as f:
+            data = f.readlines()
+        with open(setting, 'w') as f:
+            for line in data:
+                if ip in line:
+                    linedata = line[line.find('{') + 1:line.find('}\n')]
+                    for i in linedata.split(','):
+                        if ip not in i:
+                            my_string += i
+                    line = 'ips = {' + my_string + '}'
+                f.write(line)
+
+    def on_button_clicked(self,x):
+        side = {'Лево': 'l', 'Право': 'r', 'Верх': 't', 'Низ': 'b'}.get(self.cb_name_side.currentText(), 'transparent')
+        p = {k: i + 1 for i, k in enumerate(ips)}
+        ip = p.get(self.cb_reg.currentText())
+        clr = {'Синий': 'bl', 'Красный': 're', 'Зелёный': 'gr', 'Cеребряный': 'si', 'Белый': 'wh', 'Фуксия': 'fu',
+               'Орхидея': 'pu',
+               'Малиновый': 'ma', 'Желтый': 'ye', 'Оливка': 'ol', 'Лайм': 'li', 'Аква': 'aq', 'Бирюзовый': 'te',
+               'Tемно-синий': 'na', 'Прозрачный': 'x'}.get(self.cb_color.currentText(), 'x')
+        with open(setting, 'r') as f:
+            lines = f.readlines()
+        with open(setting, 'w') as f:
+                count = 0
+                for i, line in enumerate(lines):
+                    f.write(line)
+                    if '###############################################################################' in line:
+                        count += 1
+                    if count == 2 and  x=='sensor':
+                        count += 1
+                        f.write(f'{self.cb_name.currentText() + self.cb_namenumber.currentText()} {self.cb_channel.currentText()} {clr} {side} {self.cb_bit_depth.currentText()} {ip} 0.0 ({self.cb_pos_x.currentText()} {self.cb_pos_y.currentText()})\n')
+                    if count == 4 and x=='RU':
+                        count += 1
+                        f.write(
+                            f'{self.cb_name_ru.currentText() + self.cb_name_runumber.currentText()} {self.cb_orientate.currentText()} {self.cb_chr_open.currentText()} {self.cb_chr_close.currentText()} {self.cb_chdv_open.currentText()} {self.cb_chdv_close.currentText()}  {self.cb_reg_ru.currentText() } ({self.cb_pos_x.currentText()} {self.cb_pos_y.currentText()})\n')
+                    if count==6 and x=='Furn':
+                        count+=1
+                        f.write(
+                            f'Furn {self.cb_name_ru.currentText() + self.cb_name_runumber.currentText()} {self.cb_chdv_close.currentText()} {self.cb_reg_ru.currentText()}\n')
+
+    def get_name(self):
+        count = 0
+        with open(setting, 'r') as f:
+            for i, line in enumerate(f):
+                if '###############################################################################' in line :
+                    count += 1
+                if count==2:
+                    lines = [line for line in f if '##' not in line or line == '\n']
+                    break
+        return lines
+
+
+
+    def reboots(self):
+        dlgMain.reboots()
+
+
+class MainShem(QMainWindow):
+    def __init__(self, parent=None):
+        super(MainShem, self).__init__(parent)
+        self.timestart = time.strftime(Vrema, time.localtime())
+        self.showFullScreen()
+
+        self.labelimg = QLabel(self)
+        self.pixmap = QPixmap(IMG)
+        self.labelimg.setPixmap(self.pixmap)
+        self.labelimg.setScaledContents(True)
+        self.labelimg.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.opacity_effect = QGraphicsOpacityEffect()
+        self.opacity_effect.setOpacity(0.7)
+        self.labelimg.setGraphicsEffect(self.opacity_effect)
+        self.labelimg.setGeometry(200, 0, 1500, 1100)
+        self.labelimg.show()
+
+        self.ourch = self.read_file(setting)
+
+        self.timermup = QTimer()
+        self.timermup.timeout.connect(self.update_label)
+        self.timermup.start()
+
+        self.texttime = QWidget(self)
+        self.texttime.setGeometry(0, 0, 600, 145)
+        self.layout = QHBoxLayout()
+
+        stl = "border: 2px solid black;border-radius: 10px;background-color:rgb(213,199,182)"
+        self.Time = QLabel()
+        self.Time.setGeometry(0, 0, 150, 100)
+        self.Time.setFont(QFont('Arial', 30))
+        self.Time.setStyleSheet(stl)
+        self.layout.addWidget(self.Time)
+
+        self.button = QPushButton('+')
+        self.button.clicked.connect(self.Sensoradd)
+
+
+        self.button.setStyleSheet(stl)
+        self.button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.layout.addWidget(self.button)
+
+        self.input = QTextEdit(self)
+        self.input.setFont(QFont('Arial', 24))
+        self.input.setStyleSheet(stl)
+        self.layout.addWidget(self.input)
+        self.input.textChanged.connect(self.text_changed)
+
+        self.texttime.setLayout(self.layout)
+        self.texttime.show()
+        self.old_pos = None
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.showTime)
+        self.timer.start()
+
+        self.checkBox = QCheckBox()
+        self.checkBox.stateChanged.connect(self.on_checkbox_changed)
+        self.layout.addWidget(self.checkBox)
+
+        self.timerfile = QTimer()
+        self.timerfile.timeout.connect(self.do_things)
+        self.timerfile.start(3600000)
+
+        top_right_point = QApplication.desktop().availableGeometry().topRight()
+
+        self.exit = QPushButton(self)
+        self.exit.setGeometry(555, 555, 25, 25)
+        self.exit.move(top_right_point / 1.015)
+        self.exit.clicked.connect(self.closeEvent)
+        self.exit.setText('X')
+        self.exit.show()
+
+        self.full = QPushButton(self)
+        self.full.setGeometry(555, 555, 25, 25)
+        self.full.move(top_right_point / 1.0275)
+        self.full.clicked.connect(self.fullroll)
+        self.full.setText('☻')
+        self.full.show()
+
+        self.roll = QPushButton(self)
+        self.roll.setGeometry(555, 555, 25, 25)
+        self.roll.move(top_right_point / 1.04)
+        self.roll.clicked.connect(self.showMinimized)
+        self.roll.setText('_')
+        self.roll.show()
+        self.sendol = self.sendall()
+
+        keyboard.add_hotkey('PrtScn', self.print_screen)
+
+        self.formuls_math = [fd.mathematics.replace('sqrt', 'math.sqrt') for fd in self.formuls]
+        self.out = []
+
+    def text_changed(self):
+        self.timerfile = QTimer()
+        self.timerfile.timeout.connect(self.input.clearFocus)
+        self.timerfile.start(36000)
+
+    def closeEvent(self, event):
+        reply = QMessageBox.question(self, 'Message',
+                                     "Вы уверены, что хотите выйти?", QMessageBox.Yes |
+                                     QMessageBox.No, QMessageBox.No)
+        os._exit(0) if reply == QMessageBox.Yes else event.ignore()
+
+    def fullroll(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self.showMaximized()
+        else:
+            self.showFullScreen()
+
+    def do_things(self):
+        self.timestart = time.strftime(Vrema, time.localtime())
+
+    def on_checkbox_changed(self, value):
+        for item in [self.ourch, self.dampers_list, self.formuls]:
+            for i in range(len(item)):
+                item[i].moveon = Qt.CheckState(value) == Qt.CheckState.Checked
+        if Qt.CheckState(value) == Qt.CheckState.Unchecked:
+            for item in [self.ourch, self.dampers_list]:
+                for i in range(len(item)):
+                    item[i].moveon = False
+        #    self.close()
+        #   QProcess.startDetached(sys.executable, sys.argv)
+
+    def redakt(self, text):
+        with fileinput.FileInput(setting, inplace=True,
+                                 backup='.bak') as f:
+            for line in f:
+                if text[:text.find(' ')] + ' ' in line:
+                    def find_2nd(string, substring):
+                        return string.find(
+                            substring, string.find(substring) + 8)
+
+                    if '+' in text:
+                        print(line[:find_2nd(line, ' ')] +
+                              ' ' +
+                              text[text.find('+') +
+                                   1:] +
+                              line[line.find(' ('):], end='')
+                    elif '-' in text:
+                        print(line[:find_2nd(line, ' ')] +
+                              ' ' +
+                              text[text.find('-'):] +
+                              line[line.find(' ('):], end='')
+                else:
+                    print(line, end='')
+            self.close()
+            QProcess.startDetached(sys.executable, sys.argv)
+
+    def Sensoradd(self):
+        s = Setting()
+        s.show()
+
+    def showTime(self):
+        self.Time.setText(QDateTime.currentDateTime().toString('d/M/yy\nhh:mm:ss'))
+
+    def tofile(self, main_window_data, fd):
+        #      sleep(1 / 25)
+        if os.path.isfile(IZDELIE + f'/report_{IZDELIE}/' + self.timestart + '.txt'):
+            with open(IZDELIE + f'/report_{IZDELIE}/' + self.timestart + '.txt', 'a', newline='') as f:
+                self.df = pd.DataFrame(list(itertools.chain.from_iterable(main_window_data))).T
+                self.df.insert(0, 'Time', str(datetime.now().strftime('%H:%M:%S.%f')[:-3]))
+                self.df.insert(0, 'Data', str(datetime.now().strftime('%d/%m/%y')))
+                for formula in self.formuls:
+                    self.df[formula.name] = ("{:.{}f}".format(fd[self.formuls.index(formula)], formula.bit_depth))
+                f.write(self.df.to_csv(sep=';', header=False, index=False))
+        else:
+            self.df = pd.DataFrame(
+                list(itertools.chain.from_iterable(main_window_data))).T
+            for i in self.df.columns:
+                if i in self.sendol:
+                    self.df = self.df.rename(columns={i: self.sendol[i]})
+            self.df.insert(0, 'Time', str(datetime.now().strftime('%H:%M:%S.%f')[:-3]))
+            self.df.insert(0, 'Data', str(datetime.now().strftime('%d/%m/%y')))
+            os.makedirs(os.path.dirname(IZDELIE + f'/report_{IZDELIE}/'), exist_ok=True)
+            for formula in self.formuls:
+                self.df[formula.name] = ("{:.{}f}".format(fd[self.formuls.index(formula)], formula.bit_depth))
+            with open(IZDELIE + f'/report_{IZDELIE}/' + self.timestart + '.txt', 'a', newline='') as f:
+                f.write(self.df.to_csv(sep=';', header=True, index=False))
+
+    def update_label(self):
+        try:
+            main_window_data = t1live()
+            formuls = self.formuls_math.copy()
+            for sensor in self.ourch:
+                try:
+                    x = main_window_data[sensor.reg][
+                            new_list_of_dict_values[sensor.reg].index(sensor.ch)] + sensor.amendment
+                    if x != 'nan':
+                        [formuls.__setitem__(j, f.replace(str(sensor.name), str(x))) for j, f in enumerate(formuls) if
+                         sensor.name in f]
+                        sensor.l2.setText("{:.{}f}".format(x, sensor.bit_depth))
+                except ValueError as e:
+                    warning_window(f'{sensor}\n{e}')
+                    continue
+            try:
+                formuls = [round(eval(formuls_out), self.formuls[i].bit_depth) for i, formuls_out in enumerate(formuls)]
+            except Exception as e:
+                warning_window(f'Проверьте формулу и её переменные\n{e}')
+
+            [f.l2.setText("{:.{}f}".format(formuls[i], f.bit_depth)) for i, f in enumerate(self.formuls)]
+            self.tofile(main_window_data, formuls)
+        except Exception as e:
+            warning_window(e)
+
+    def sendall(self):
+        return {i: sensor for i, sensor in enumerate(self.sensor_list)}
+
+    def read_file(self, setting):
+        try:
+            with open(setting) as file:
+                self.sensor_list = []
+                self.dampers_list = []
+                self.translate_list = []
+                self.formuls = []
+                for row in file:
+                    setting = row[:row.rfind(' (')].split(' ')
+                    move = row[row.rfind('(') + 1:row.rfind(')')].split()
+                    if row == "\n" or any(x in row for x in ["#", "ips", "IZDELIE", "sensor_size", "hidename"]):
+                        continue
+                    elif any(x in row.lower() for x in ["zu", "ru"]) and '<=>' not in row:
+                        damper = Damper(setting[0], setting[1], int(setting[2]), int(setting[3]), int(setting[4]),
+                                        int(setting[5]), int(setting[6]), self)
+                        damper.setGeometry(int(move[0]), int(move[1]), 150, 150)
+                        self.dampers_list.append(damper)
+                        continue
+                    elif '<=>' in row:
+                        self.translate_list.append(
+                            Translate(row[:row.find('<')], row[row.find('>') + 1:row.find('\n')], self.dampers_list,
+                                      self))
+                        [i.show() for i in self.translate_list]
+                        continue
+                    elif 'Furn' in row:
+                        f = Furnace(setting[1], int(setting[2]), int(setting[3]), self)
+                        f.show()
+                        continue
+                    elif 'Math' in row:
+                        M = Formula(setting[1], setting[2], setting[3], setting[4], int(setting[5]))
+                        M.setParent(self)
+                        M.move(int(move[0]), int(move[1]))
+                        M.show()
+                        self.formuls.append(M)
+                        continue
+                    else:
+                        sensor = Sensor(setting[0], int(setting[1]), setting[2], setting[3],
+                                        int(setting[4]), int(setting[5]), float(setting[6]), self)
+                        self.sensor_list.append(sensor)
+                        sensor.move(int(move[0]), int(move[1]))
+                        sensor.show()
+                return self.sensor_list
+        except Exception as error:
+            warning_window(f'{row}\n {error} непрвельный параметр')
+
+    def print_screen(self):
+        os.makedirs(os.path.dirname(IZDELIE + f'/screens_{IZDELIE}/'), exist_ok=True)
+        self.grab().save(IZDELIE + f'/screens_{IZDELIE}/' + time.strftime(Vrema, time.localtime()) + ".jpg")
+
+    def reboots(self):
+        os.execl(sys.executable, os.path.abspath(__file__), *sys.argv)
+
+
+if __name__ == '__main__':
+    try:
+        app = QApplication(sys.argv)
+        dlgMain = MainShem()
+        dlgMain.show()
+        sys.exit(app.exec_())
+    except Exception as e:
+        warning_window(e)
