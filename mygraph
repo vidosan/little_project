@@ -1,0 +1,107 @@
+import datetime
+import sys
+
+from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import *
+import pyqtgraph as pg
+import numpy as np
+import time
+
+class GraphWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle('Real-Time Graph')
+        self.setGeometry(100, 100, 800, 600)
+
+        # Создаем объект графика
+        self.graphWidget = pg.PlotWidget(self)
+        self.setCentralWidget(self.graphWidget)
+
+        # Создаем объект QComboBox для выбора интервала отображения данных на оси x
+        self.comboBox = QComboBox(self)
+        self.comboBox.addItem("10%")
+        self.comboBox.addItem("20%")
+        self.comboBox.addItem("30%")
+        self.comboBox.addItem("40%")
+        self.comboBox.addItem("50%")
+        self.comboBox.addItem("60%")
+        self.comboBox.addItem("70%")
+        self.comboBox.addItem("80%")
+        self.comboBox.addItem("90%")
+        self.comboBox.addItem("100%")
+        self.comboBox.currentIndexChanged.connect(self.update_graph)
+
+        # Настраиваем параметры графика
+        self.graphWidget.showGrid(x=True, y=True)
+        self.graphWidget.setBackground('#1A1A1A')
+        self.graphWidget.setLabel('left', 'Данные')
+
+        axis = pg.DateAxisItem(orientation='bottom')
+        self.line = pg.PlotCurveItem(pen="g")
+        self.graphWidget.addItem(self.line)
+        self.graphWidget.setAxisItems({"bottom": axis})
+        self.graphWidget.setLabel('bottom', datetime.datetime.now())
+
+        # Создаем список датчиков для отображения на графике
+        self.sensors = ['Sensor 1', 'Sensor 2', 'Sensor 3']
+
+        # Инициализируем данные для графика
+        self.data = {}
+        for sensor in self.sensors:
+            self.data[sensor] = {'x': [], 'y': []}
+
+        # Создаем кривые для каждого датчика
+        self.curves = {}
+        for sensor in self.sensors:
+            self.curves[sensor] = self.graphWidget.plot(self.data[sensor]['x'], self.data[sensor]['y'], pen=pg.mkPen(color=pg.intColor(self.sensors.index(sensor)), width=2))
+
+        # Запускаем таймер обновления графика
+        self.timer = pg.QtCore.QTimer()
+        self.timer.timeout.connect(self.update_graph)
+        self.timer.start(1000) # обновление каждую секунду
+
+    def update_graph(self):
+        # Получаем текущее время в миллисекундах
+        current_time = time.time()
+        current_time_str = datetime.datetime.fromtimestamp(current_time).strftime('%H:%M:%S')
+        self.graphWidget.getAxis('bottom').setLabel(current_time_str)
+        # Обновляем данные для каждого датчика
+        for sensor in self.sensors:
+            # Генерируем случайное значение для демонстрации работы
+            new_value = np.random.randint(0, 101)
+
+            # Добавляем новые данные в список
+            self.data[sensor]['x'].append(current_time)
+            self.data[sensor]['y'].append(new_value)
+
+            # Ограничиваем количество отображаемых точек (не более 100)
+            max_points = 10
+            if len(self.data[sensor]['x']) > max_points:
+                self.data[sensor]['x'] = self.data[sensor]['x'][-max_points:]
+                self.data[sensor]['y'] = self.data[sensor]['y'][-max_points:]
+
+            # Определяем интервал отображения данных на графике
+            interval = int(self.comboBox.currentText().replace('%', '')) / 100
+            time_range = 0
+            if len(self.data[sensor]['x']) >= 2:
+                time_range = current_time - self.data[sensor]['x'][0]
+            if time_range > 0:
+                 time_range *= interval
+            else:
+                time_range = 1.0
+
+            # Обновляем интервал отображения времени на оси x
+            axis = self.graphWidget.getAxis('bottom')
+            axis.setRange(current_time - time_range, current_time)
+
+            # Обновляем данные на графике
+            self.curves[sensor].setData(self.data[sensor]['x'], self.data[sensor]['y'])
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = GraphWindow()
+    window.show()
+    sys.exit(app.exec_())
+
