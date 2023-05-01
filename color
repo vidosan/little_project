@@ -1,0 +1,40 @@
+import sys
+from PyQt5.QtWidgets import QApplication, QMainWindow, QComboBox, QColorDialog, QLabel, QFrame
+from PyQt5.QtGui import QColor
+
+
+class Window(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Color Dialog Example")
+        self.setGeometry(500,500,300,300)
+        self.combo_box = QComboBox(self)
+        self.combo_box.setGeometry(50, 50, 200, 30)
+        colors = {"Красный": "#FF5733", "Зелёный": "#00ff00", "Синий": "#50b4bd", 'Черный': 'black', 'Голубой': 'cyan',
+                  'Тёмносерый': 'DarkGray', 'Серый': 'gray', 'Светлосерый': 'lightGray', 'Пурпурный': 'magenta',
+                  'Жёлтый': 'yellow', 'Прозрачный': 'transparent'}
+        self.combo_box.addItems(colors.keys())
+
+        self.color_label = QLabel(self)
+        self.color_label.setGeometry(50, 100, 200, 50)
+        self.color_label.setAutoFillBackground(True)
+        self.color_label.setStyleSheet(f"background-color: #50b4bd")
+        self.combo_box.currentIndexChanged.connect(lambda:self.on_combo_box_change(colors))
+
+    def on_combo_box_change(self,colors):
+        if self.combo_box.currentText() in colors:
+            self.color_label.setStyleSheet(f"background-color: {colors[self.combo_box.currentText()]}")
+        elif self.combo_box.currentText()=='Свой цвет':
+            color = QColorDialog.getColor()
+            if color.isValid():
+                self.color_label.setStyleSheet(f"background-color: {color.name()}")
+                self.combo_box.addItem(color.name())
+                self.combo_box.setCurrentIndex(self.combo_box.count() - 1)
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = Window()
+    window.show()
+    sys.exit(app.exec_())
