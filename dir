@@ -1,0 +1,96 @@
+import os
+import sys
+
+from PyQt5.QtCore import Qt, QFile, QTimer, QSettings
+from PyQt5.QtWidgets import QApplication, QMainWindow, QComboBox, QColorDialog, QLabel, QFrame, QPushButton, \
+    QHBoxLayout, QWidget, QInputDialog, QDialog, QVBoxLayout, QFileDialog
+from PyQt5.QtGui import QColor, QFont
+
+
+class Window(QWidget):
+    def __init__(self):
+        super().__init__()
+        qsettings = QSettings('Teplo', 'm7m')
+        self.last_index = qsettings.value('last_index', 0)
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.horizont = QHBoxLayout(self)
+        self.setGeometry(500, 500, 450, 100)
+        self.combo_box = QComboBox()
+        self.combo_box.setGeometry(50, 50, 200, 30)
+        program_directory = os.path.dirname(os.path.realpath(__file__))
+        if os.path.isdir(program_directory):
+            for folder_name in os.listdir(program_directory):
+                folder_path = os.path.join(program_directory, folder_name)
+                if os.path.isdir(folder_path) and folder_name != "__pycache__":
+                    self.combo_box.addItem(folder_name)
+        self.btn1 = QPushButton('ок')
+        self.btn2 = QPushButton('+')
+        self.btn3 = QPushButton('вых')
+        self.horizont.addWidget(self.combo_box, 2)
+        self.btn1.setFixedSize(50, 30)
+        self.btn2.setFixedSize(50, 30)
+        self.btn3.setFixedSize(50, 30)
+        self.horizont.addWidget(self.btn1)
+        self.horizont.addWidget(self.btn2)
+        self.horizont.addWidget(self.btn3)
+
+        self.btn1.clicked.connect(lambda: self.return_dir(qsettings, program_directory))
+        self.btn2.clicked.connect(lambda: self.addnew(program_directory))
+        self.btn3.clicked.connect(QApplication.quit)
+
+        self.setLayout(self.horizont)
+        self.combo_box.setCurrentIndex(self.last_index)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(10000)
+        self.timer.timeout.connect(lambda: self.return_dir(qsettings, program_directory))
+        self.timer.start()
+        self.setFont(QFont('Arial', 14))
+        self.combo_box.currentTextChanged.connect(lambda: self.timer.stop())
+
+    def return_dir(self, qsettings, settings_directory):
+        self.last_index = self.combo_box.currentIndex()
+        qsettings.setValue('last_index', self.last_index)
+        self.close()
+        return print(os.path.join(settings_directory, self.combo_box.currentText()))
+
+    def addnew(self, settings_directory):
+        self.timer.stop()
+        folder_name, ok_pressed = QInputDialog.getText(self, 'Название', 'Введите название')
+        if ok_pressed and folder_name and self.combo_box.findText(folder_name) == -1:
+            self.combo_box.addItem(folder_name)
+            self.combo_box.setCurrentIndex(self.combo_box.count() - 1)
+            if not os.path.exists(folder_name):
+                new_folder_path = os.path.join(settings_directory, folder_name)
+                os.makedirs(new_folder_path)
+
+                selected_image = QFileDialog.getOpenFileName(self, "Выберите изображение", settings_directory,
+                                                             "Images (*.png *.xpm *.jpg *.bmp)")[0]
+                if not selected_image:
+                    target_file_path = os.path.join(new_folder_path, "BG.jpg")
+                    with open(target_file_path, 'w') as f:
+                        pass
+                else:
+                    file_name, file_extension = os.path.splitext(selected_image)
+                    new_file_name = "BG" + file_extension
+                    target_file_path = os.path.join(new_folder_path, new_file_name)
+                    QFile.copy(selected_image, target_file_path)
+
+                selected_txt = \
+                QFileDialog.getOpenFileName(self, "Выберите настройки", settings_directory, "Текстовые файлы (*.txt)")[
+                    0]
+                if selected_txt:
+                    target_file_path = os.path.join(new_folder_path, os.path.basename(selected_txt))
+                    QFile.copy(selected_txt, target_file_path)
+                else:
+                    default_file_path = "setting1_default.txt"
+                    new_file_name = "setting1.txt"
+                    target_file_path = os.path.join(new_folder_path, new_file_name)
+                    QFile.copy(default_file_path, target_file_path)
+                    QFile(target_file_path).rename(os.path.join(new_folder_path, new_file_name))
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = Window()
+    window.show()
+    sys.exit(app.exec_())
