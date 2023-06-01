@@ -1,0 +1,195 @@
+from PyQt5.QtGui import QKeyEvent, QKeySequence
+from PyQt5.QtWidgets import *
+from PyQt5.QtChart import *
+from PyQt5.QtCore import *
+import random
+import sys
+from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtCore import Qt
+from PyQt5.uic.properties import QtCore, QtWidgets
+from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtCore import Qt
+from PyQt5 import QtCore
+from PyQt5.QtCore import Qt
+from PyQt5 import QtWidgets, QtCore, QtGui
+
+from pyqtgraph import PlotWidget, plot
+class RealTimeGraph(QMainWindow):
+    def __init__(self, parent=None):
+        super(RealTimeGraph, self).__init__(parent)
+        self.min_y_line_edit = QSpinBox()
+        self.max_y_line_edit = QSpinBox()
+        self.min_y_line_edit.setMinimum(-1000)
+        self.min_y_line_edit.setMaximum(1000)
+        self.min_y_line_edit.setValue(0)
+        self.max_y_line_edit.setMinimum(-1000)
+        self.max_y_line_edit.setMaximum(1000)
+        self.max_y_line_edit.setValue(100)
+        self.hide_frame_button = QPushButton("Тема")
+        self.line_series = QLineSeries()
+        self.chart = QChart()
+        self.chart.addSeries(self.line_series)
+        self.chart.legend().hide()
+        self.axis_x = QDateTimeAxis()
+        self.axis_x.setFormat("hh:mm:ss")
+        dt = QDateTime.currentDateTime()
+        self.axis_x.setRange(dt.addSecs(-60), dt)
+        self.axis_x.setTitleText("Time")
+        self.chart.addAxis(self.axis_x, Qt.AlignBottom)
+        self.line_series.attachAxis(self.axis_x)
+        self.tick_x_spin_box = QSpinBox()
+        self.tick_x_spin_box.setMinimum(1)
+        self.tick_x_spin_box.setMaximum(100)
+        self.tick_x_spin_box.setValue(5)
+        self.tick_x_spin_box.valueChanged.connect(lambda: self.axis_x.setTickCount(self.tick_x_spin_box.value()))
+        self.axis_y = QValueAxis()
+        self.axis_y.setRange(0, 100)
+        self.axis_y.setTitleText("Значения")
+        self.chart.addAxis(self.axis_y, Qt.AlignLeft)
+        self.line_series.attachAxis(self.axis_y)
+        self.tick_y_spin_box = QSpinBox()
+        self.tick_y_spin_box.setMinimum(1)
+        self.tick_y_spin_box.setMaximum(100)
+        self.tick_y_spin_box.setValue(9)
+        self.tick_y_spin_box.valueChanged.connect(lambda: self.axis_y.setTickCount(self.tick_y_spin_box.value()))
+        self.y_input_layout = QHBoxLayout()
+        self.y_input_layout.addWidget(QLabel('X ticks:'))
+        self.y_input_layout.addWidget(self.tick_x_spin_box)
+        self.y_input_layout.addWidget(QLabel('Y ticks:'))
+        self.y_input_layout.addWidget(self.tick_y_spin_box)
+        self.y_input_layout.addWidget(QLabel('Y minimum:'))
+        self.y_input_layout.addWidget(self.min_y_line_edit)
+        self.y_input_layout.addWidget(QLabel('Y maximum:'))
+        self.y_input_layout.addWidget(self.max_y_line_edit)
+        hide_frame_layout = QVBoxLayout()
+        hide_frame_layout.addLayout(self.y_input_layout)
+
+        self.time_range_spin_box = QSpinBox()
+        self.time_range_spin_box.setMinimum(1)
+        self.time_range_spin_box.setMaximum(2147483647)
+        self.time_range_spin_box.setValue(60)
+        self.time_range_spin_box.valueChanged.connect(self.update_time_range)
+        self.y_input_layout.addWidget(QLabel('Time Range:'))
+        self.y_input_layout.addWidget(self.time_range_spin_box)
+
+
+
+        self.y_input_layout.addWidget(self.hide_frame_button)
+        self.btn2 = QPushButton()
+        self.btn2.setText("Изменить флаг")
+        self.btn2.clicked.connect(lambda: self.changeWindowFlag(self.y_input_layout))
+        self.y_input_layout.addWidget(self.btn2)
+        central_layout = QGridLayout()
+        central_layout.setContentsMargins(0, 0, 0, 0)  # установка всех отступов на 0
+        central_layout.setSpacing(0)  # удаление пространств между виджетами в сетке
+        central_layout.addLayout(hide_frame_layout, 0, 0, 1, 1, alignment=Qt.AlignTop)
+        self.chart_view = QChartView(self.chart)
+        central_layout.addWidget(self.chart_view, 1, 0)
+        central_widget = QWidget()
+        central_widget.setLayout(central_layout)
+        self.setCentralWidget(central_widget)
+        self.hide_frame_button.clicked.connect(self.toggle_frame)
+        self.min_y_line_edit.valueChanged.connect(
+            lambda: self.axis_y.setRange(self.min_y_line_edit.value(), self.max_y_line_edit.value()))
+        self.max_y_line_edit.valueChanged.connect(
+            lambda: self.axis_y.setRange(self.min_y_line_edit.value(), self.max_y_line_edit.value()))
+        self.timer = QTimer()
+        self.timer.setInterval(100)
+        self.timer.timeout.connect(self.update_data)
+        self.timer.start()
+        self.data_x = [dt]
+        self.data_y = [random.uniform(0, 100)]
+        self.line_series.append(self.data_x[-1].toMSecsSinceEpoch(), self.data_y[-1])
+        self.chart_themes = [QChart.ChartThemeLight, QChart.ChartThemeDark, QChart.ChartThemeBlueCerulean,
+                             QChart.ChartThemeBrownSand,
+                             QChart.ChartThemeBlueNcs, QChart.ChartThemeHighContrast, QChart.ChartThemeBlueIcy]
+        self.current_theme_index = 0
+
+        self.flags = [
+            QtCore.Qt.Window | QtCore.Qt.CustomizeWindowHint |
+            QtCore.Qt.WindowCloseButtonHint |
+            QtCore.Qt.WindowMinimizeButtonHint |
+            QtCore.Qt.WindowMaximizeButtonHint,
+            QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.FramelessWindowHint
+
+        ]
+        self.current_flag_index = 0
+
+        self.original_size = None  # Store the original window size
+
+
+    def resizeEvent(self, event):
+        if self.original_size is None:
+            self.original_size = self.size()
+    def update_time_range(self):
+        time_range = self.time_range_spin_box.value()
+        dt = QDateTime.currentDateTime()
+        dt_start = dt.addSecs(-time_range)
+        dt_end = dt
+        self.axis_x.setRange(dt_start, dt_end)
+        if self.original_size is not None:
+            self.resize(self.original_size)  # Restore the original window size
+
+
+
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.modifiers() == QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_C:
+            for i in range(self.y_input_layout.count()):
+                self.y_input_layout.itemAt(i).widget().show()
+
+        if event.matches(QKeySequence.ZoomIn):
+            self.chart_view.chart().zoom(1.2)
+        elif event.matches(QKeySequence.ZoomOut):
+            self.chart_view.chart().zoom(0.8)
+        else:
+            super().keyPressEvent(event)
+
+    def update_window_flags(self):
+        self.setWindowFlags(self.flags[self.current_flag_index])
+        self.show()
+
+    def changeWindowFlag(self, y):
+        if self.chart_view:
+            self.flags = [Qt.Window | flag for flag in self.flags]
+            self.update_window_flags()
+            for i in range(y.count()):
+                if y.itemAt(i).widget() != self.chart_view:
+                    y.itemAt(i).widget().hide()
+            self.setWindowFlag(QtCore.Qt.FramelessWindowHint)
+        else:
+            self.update_window_flags()
+        self.current_flag_index = (self.current_flag_index + 1) % len(self.flags)
+        self.update_window_flags()
+
+    def toggle_frame(self):
+        self.current_theme_index += 1
+        if self.current_theme_index >= len(self.chart_themes):
+            self.current_theme_index = 0
+        self.chart.setTheme(self.chart_themes[self.current_theme_index])
+
+    def update_y_axis(self):
+        self.axis_y.setRange(self.min_y_line_edit.value(), self.max_y_line_edit.value())
+
+
+    def update_data(self):
+
+        dt = QDateTime.currentDateTime()
+        self.data_x.append(dt)
+        self.data_y.append(random.uniform(0, 100))
+
+        time_range = self.time_range_spin_box.value()
+        dt_end = self.data_x[-1]
+        dt_start = dt_end.addSecs(-time_range)
+        self.axis_x.setRange(dt_start, dt_end)
+        self.line_series.append(dt.toMSecsSinceEpoch(), self.data_y[-1])
+        self.axis_x.setTickCount(self.tick_x_spin_box.value())
+        self.axis_y.setTickCount(self.tick_y_spin_box.value())
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    w = RealTimeGraph()
+    w.resize(300, 300)
+    w.show()
+    sys.exit(app.exec_())
