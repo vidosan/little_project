@@ -436,6 +436,7 @@ if __name__ == '__main__':
         'hidename': 0,
         'format_time': "%H_%M_%S__%d-%m-%y",
         'pack': 4,
+        'open_timer_logic':'0',
         'GRID': '#' * 79,
         'COLORS': {
             "Красный": "FF5733", "Зелёный": "00ff00", "Синий": "50b4bd",
@@ -513,6 +514,20 @@ def initialize_data_streams(channels, dampers_list):
     """Создает потоки для различных протоколов в сети для получения данных."""
     queue_names = []
     config['threads'] = []
+    config.setdefault('damper_data_queue', {})
+    config.setdefault('dampers_signals', {})
+
+    for i in range(len(config['IPS'])):
+        if list(config['IPS'].values())[i] in ['modbus', 'elemer']:
+            # Найти все заслонки для этого reg
+            dampers_for_reg = [d for d in dampers_list if d.reg == i]
+            if dampers_for_reg:
+                max_di_ch = max(max(d.chr_open, d.chr_close) for d in dampers_for_reg) + 1
+            else:
+                max_di_ch = 10  # fallback
+            config['damper_data_queue'][i] = [0] * max_di_ch
+            config['dampers_signals'][i] = {0: 0}  # минимум один DO
+    # --- Конец: инициализация ---
 
     function_dict = {
         'modbus': partial(fetch_data_from_modbus, device_type='modbus'),
@@ -654,68 +669,83 @@ def read_sensors_ops(sensors, opc_device, opc_client):
     # Закрытие соединения с OPC сервером
     opc_client.close()
 
-
 def fetch_data_from_modbus(protocol_index, modbus_client, channels, dampers_list, data_queue, device_type='modbus'):
     try:
+        # Фильтруем датчики и заслонки для текущего reg
         relevant_sensors = [sensor for sensor in channels if sensor.reg == protocol_index]
         relevant_dampers = {
             (damper.name, damper.reg): [damper.chdv_open, damper.chdv_close]
             for damper in dampers_list if damper.reg == protocol_index
         }
 
-        # Инициализация сигналов заслонок
-        try:
-            max_value = max(max(vals) for vals in relevant_dampers.values())
-            config['dampers_signals'][protocol_index] = {key: 0 for key in range(0, max_value + 1)}
-            dampers_signals = config['dampers_signals'][protocol_index].copy()
+        # --- Инициализация dampers_signals (управление) ---
+        if relevant_dampers:
+            max_do_channel = max(max(vals) for vals in relevant_dampers.values())
+        else:
+            max_do_channel = 3  # fallback: минимум 4 канала (0-3)
 
-            try:
-                input_signals = modbus_client.read_discrete_inputs(0, 9)
-                config['damper_data_queue'][protocol_index] = input_signals or [0] * 10
-            except Exception as e:
-                print(f"[modbus-{device_type}] Ошибка чтения входов: {e}")
-                config['damper_data_queue'][protocol_index] = [0] * 10
-        except Exception:
-            dampers_signals = config['dampers_signals'][protocol_index] = 0
+        config['dampers_signals'][protocol_index] = {key: 0 for key in range(0, max_do_channel + 1)}
+        dampers_signals = config['dampers_signals'][protocol_index].copy()
 
-        backup_data = [float('nan')] * len(relevant_sensors)  # резерв на случай ошибки
+        # --- Определяем, сколько DI читать ---
+        dampers_for_reg = [d for d in dampers_list if d.reg == protocol_index]
+        if dampers_for_reg:
+            max_di_channel = max(max(d.chr_open, d.chr_close) for d in dampers_for_reg)
+            num_di_to_read = max_di_channel + 5
+        else:
+            num_di_to_read = 10  # fallback
 
+        # --- Инициализируем damper_data_queue нужной длины ---
+        current_len = len(config['damper_data_queue'][protocol_index])
+        if current_len < num_di_to_read:
+            # Дополняем
+            config['damper_data_queue'][protocol_index] += [0] * (num_di_to_read - current_len)
+        elif current_len > num_di_to_read:
+            # Оставляем как есть, но не обрезаем
+            pass
+
+        # --- Основной цикл ---
         while True:
+            # Чтение аналоговых данных (датчики)
             try:
-                # Основной цикл чтения сенсоров
                 modbus_data = list(fetch_sensor_data(relevant_sensors, modbus_client, device_type))
-
-                # 🚨 Чтение входов КАЖДЫЙ ЦИКЛ
-                try:
-                    input_signals = modbus_client.read_discrete_inputs(0, 9)
-                    if input_signals != config['damper_data_queue'][protocol_index]:
-                        print(
-                            f"[modbus-{device_type}] Входы изменились: {config['damper_data_queue'][protocol_index]} → {input_signals}")
-                        config['damper_data_queue'][protocol_index] = input_signals
-                except Exception as e:
-                    print(f"[modbus-{device_type}] Ошибка чтения входов в цикле: {e}")
-
-                # Проверка сигналов заслонок
-                if config['dampers_signals'][protocol_index] != dampers_signals:
-                    try:
-                        modbus_client.write_multiple_coils(
-                            0, list(config['dampers_signals'][protocol_index].values())
-                        )
-                        dampers_signals = config['dampers_signals'][protocol_index].copy()
-                    except Exception as e:
-                        print(f"[modbus-{device_type}] Ошибка управления заслонками: {e}")
-
-                backup_data = modbus_data.copy()
-
             except Exception as e:
-                print(f"[modbus-{device_type}] Ошибка чтения: {e}")
-                modbus_data = backup_data.copy() if backup_data else [float('nan')] * len(relevant_sensors)
+                print(f"[modbus-{device_type}] Ошибка чтения AI: {e}")
+                modbus_data = [float('nan')] * len(relevant_sensors)
 
-            data_queue.put(modbus_data)
+            # Чтение дискретных входов (DI) — концевики
+            try:
+                input_signals = modbus_client.read_discrete_inputs(0, num_di_to_read)
+              #  print(protocol_index,input_signals)
+                if input_signals is None:
+                    raise Exception("read_discrete_inputs вернул None")
+                # Обновляем только если изменилось
+                if list(config['damper_data_queue'][protocol_index]) != input_signals:
+                    config['damper_data_queue'][protocol_index] = input_signals[:]
+            except Exception as e:
+                print(f"[modbus-{device_type}] Ошибка чтения DI: {e}")
+                config['damper_data_queue'][protocol_index] = [0] * num_di_to_read
+
+            # Запись управляющих сигналов (DO)
+            try:
+                if config['dampers_signals'][protocol_index] != dampers_signals:
+                    modbus_client.write_multiple_coils(
+                        0,
+                        list(config['dampers_signals'][protocol_index].values())
+                    )
+                    dampers_signals = config['dampers_signals'][protocol_index].copy()
+            except Exception as e:
+                print(f"[modbus-{device_type}] Ошибка записи DO: {e}")
+
+            try:
+                data_queue.put(modbus_data)
+            except Exception as e:
+                print(f"[modbus-{device_type}] Ошибка отправки в очередь: {e}")
+
             time.sleep(0.1)
 
     except Exception as e:
-        warning_window(f'{e}  {device_type.capitalize()} connection failed')
+        print(f"[fetch_data_from_modbus] Фатальная ошибка в reg={protocol_index}: {e}")
 
 
 def fetch_sensor_data(sensor_list, modbus_client, device_type='modbus'):
@@ -1106,6 +1136,12 @@ class Damper(MovableObject):
         self.setup_ui_elements()
         self.auto_side = side_auto
         self.scaletext(config.get("damper_size", 2))
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._update_shutter_display_color)
+        self.timer.start(500)
+
+        self.current_action = None  # 'Open' или 'Close'
+        self.action_lock = threading.Lock()  # Защита от гонки
 
     def setup_ui_elements(self):
         """Setup UI elements for the damper."""
@@ -1148,12 +1184,12 @@ class Damper(MovableObject):
 
         def setup_button_func(button, on_press_action, on_release_action):
             button.mousePressEvent = lambda event: (
-                self.Press(on_press_action) if event.button() == Qt.RightButton else (
-                    self.onButtonPressed(on_press_action) if event.button() == Qt.LeftButton else None
+                self.Press(on_press_action) if event.button() == Qt.LeftButton else (
+                    self.onButtonPressed(on_press_action) if event.button() == Qt.RightButton else None
                 )
             )
             button.mouseReleaseEvent = lambda event: (
-                self.onButtonPressed(on_release_action) if event.button() == Qt.LeftButton else None)
+                self.onButtonPressed(on_release_action) if event.button() == Qt.RightButton else None)
 
         self.red_button = QPushButton()
         setup_button_func(self.red_button, 'turnOnRed', 'turnOffRed')
@@ -1368,10 +1404,16 @@ class Damper(MovableObject):
             margin-bottom: 0;background-color: {color};text-align: center;""")
 
     def _read_from_endcup(self):
-
-        shutter_open = config['damper_data_queue'][self.reg][self.chr_open]
-        shutter_close = config['damper_data_queue'][self.reg][self.chr_close]
-        return shutter_open, shutter_close
+        try:
+            signals = config['damper_data_queue'].get(self.reg, [])
+            if not signals:
+                return 0, 0
+            open_val = signals[self.chr_open] if self.chr_open < len(signals) else 0
+            close_val = signals[self.chr_close] if self.chr_close < len(signals) else 0
+            return open_val, close_val
+        except Exception as e:
+            print(f"[Damper] Ошибка чтения DI {self.name}: {e}")
+            return 0, 0
 
     def onButtonPressed(self, action_name_suffix):
         '''Метод, который выполняется при нажатии кнопки или выполнении определенного действия.
@@ -1399,33 +1441,51 @@ class Damper(MovableObject):
             trz.start()
 
     def pressing(self, bt, time):
-        """
-          Метод, который выполняет действия при нажатии на кнопку в пользовательском интерфейсе.
+        """Запускает длительный импульс с полным снятием противоположной команды."""
 
-          Параметры:
-          - self: ссылка на экземпляр класса, в котором определен этот метод.
-          - bt: тип кнопки (Open или Close).
-          - time: время задержки.
+        def action():
+            with self.action_lock:
+                # Прерываем противоположную команду
+                if bt == 'Open' and self.current_action == 'Close':
+                    self._force_release('Close')
+                elif bt == 'Close' and self.current_action == 'Open':
+                    self._force_release('Open')
 
-          Действия:
-          - Определяет действия для каждой кнопки (Open или Close) с использованием лямбда-функций и выполняет их в отдельном потоке.
+                self.current_action = bt
 
-          Примечание:
-          Этот метод используется для обработки действий при нажатии кнопок в пользовательском интерфейсе.
+            # Теперь запускаем свою команду
+            on_cmd = 'turnOnGreen' if bt == 'Open' else 'turnOnRed'
+            off_cmd = 'turnOffGreen' if bt == 'Open' else 'turnOffRed'
 
-          """
-        button_actions = {
-            'Open': lambda: (self.onButtonPressed('turnOnGreen'), sleep(time), self.onButtonPressed('turnOffGreen')),
-            'Close': lambda: (self.onButtonPressed('turnOnRed'), sleep(time), self.onButtonPressed('turnOffRed'))
-        }
-        # Получаем нужное действие на основе типа кнопки
-        action = button_actions.get(bt)
-        if not action:
-            return
-        # Создаем и запускаем новый поток для выполнения действия
-        t1 = threading.Thread(target=action, name=f'{self}_{bt}')
-        t1.start()
+            self.onButtonPressed(on_cmd)
 
+            try:
+                sleep(float(time))
+            except:
+                pass  # на случай, если time некорректно
+
+            self.onButtonPressed(off_cmd)
+
+            with self.action_lock:
+                if self.current_action == bt:
+                    self.current_action = None
+
+        t = threading.Thread(target=action, daemon=True)
+        t.start()
+
+    def _force_release(self, action_to_release):
+        """Принудительно снимает противоположную команду: визуально и физически."""
+        if action_to_release == 'Open':
+            self.onButtonPressed('turnOffGreen')
+            with Damper.lock:
+                if self.chdv_open in config['dampers_signals'][self.reg]:
+                    config['dampers_signals'][self.reg][self.chdv_open] = 0
+        elif action_to_release == 'Close':
+            self.onButtonPressed('turnOffRed')
+            with Damper.lock:
+                if self.chdv_close in config['dampers_signals'][self.reg]:
+                    config['dampers_signals'][self.reg][self.chdv_close] = 0
+        self.current_action = None
     def update_damper(self, ch_push_value, channel, calling_function_name):
         """
         Метод, обновляющий интерфейс и выполняющий различные действия в зависимости от переданных параметров.
@@ -1439,6 +1499,9 @@ class Damper(MovableObject):
         Примечание:
         Этот метод используется для обработки действий, связанных с управлением заслонкой и обновлением интерфейса.
         """
+        # Взаимная блокировка: нельзя одновременно открывать и закрывать
+
+
         color_map = {
             'turnOnGreen': ('8cd9ad', self.green_button),
             'turnOnRed': ('df022a', self.red_button),
@@ -1472,6 +1535,17 @@ class Damper(MovableObject):
 
         if calling_function_name in ('turnOffRed', 'turnOffGreen'):
             self._update_shutter_display_color()
+        if calling_function_name in ('turnOnGreen', 'turnOnRed'):
+            # Определяем, какая команда запускается
+            new_action = 'Open' if calling_function_name == 'turnOnGreen' else 'Close'
+
+            with self.action_lock:
+                # Если уже есть активная противоположная команда — снимаем
+                if (new_action == 'Open' and self.current_action == 'Close') or \
+                        (new_action == 'Close' and self.current_action == 'Open'):
+                    self._force_release('Open' if new_action == 'Close' else 'Close')
+
+                self.current_action = new_action
         sleep(0.1)
 
     def _signal_changed(self, channel, ch_push_value, type):
@@ -1808,7 +1882,7 @@ class ValveControlWidget(QWidget):
     def _process_auto_control(self):
         """Цикл автоматического управления: импульс → анализ → пауза перед следующим действием."""
         self.sensor_data = float(
-            f"{Damper.sensor_data.get((self.sensor_for_auto.reg, self.sensor_for_auto.ch), float('nan')):.3f}")
+            f"{Damper.sensor_data.get((self.sensor_for_auto.reg, self.sensor_for_auto.ch), float('nan')):.3f}") + self.sensor_for_auto.amendment
         self.impuls = round(max(0, self._update_pid(self.ustA.value(), self.sensor_data) or 0), 4) or 0
 
         # Определение действия
@@ -1953,7 +2027,7 @@ class InfoWidget(QWidget):
         self.chklbl.setText('спрятать имя')
 
         self.const = QLineEdit()
-        #self.const.setText(str(self.pa.amendment))
+        # self.const.setText(str(self.pa.amendment))
 
         self.const.setValidator(QRegExpValidator(QRegExp(r'-?\d*\.?\d+')))
         self.const.textChanged.connect(lambda: self.on_text_changed(self.const.text()))
@@ -2028,6 +2102,7 @@ class Sensor(MovableObject):
     '''
     update_sensor_bord = pyqtSignal(str)  # сигнал: имя сенсора и новое значение
     update_sensor_amendment = pyqtSignal(str)
+
     def __init__(self, name='♥', ch=1, clr='bl', side_name='l', bit_depth=2, reg=1, amendment=0.0, parent=None):
         super(Sensor, self).__init__(parent)
         self.name = name
@@ -2062,7 +2137,8 @@ class Sensor(MovableObject):
 
     @pyqtSlot(str)
     def amendment_eddit(self, amendment):
-        self.amendment=float(amendment)
+        self.amendment = float(amendment)
+
     @pyqtSlot(str)
     def on_update_sensor_bord(self, color):
         self.l2.setStyleSheet(color)
@@ -2740,12 +2816,12 @@ class Set_point(QWidget):
         background_color = color.lighter(160).name()  # 160% светлее
 
         self.setStyleSheet(f"""
-        
+
                 border: 2px solid {border_color};
                 border-radius: 6px;
                 background-color: {background_color};
                 padding: 6px;
-           
+
         """)
 
     def scaletext(self, value):
@@ -2773,7 +2849,8 @@ class Set_point(QWidget):
 
     def load_settings(self):
         try:
-            settings = QSettings("Teplo", f"{config["IZDELIE"]}_SensorSettings_{self.index}")  # Use a unique identifier for each instance
+            settings = QSettings("Teplo",
+                                 f"{config["IZDELIE"]}_SensorSettings_{self.index}")  # Use a unique identifier for each instance
             description = settings.value("description")
             sensor = settings.value("sensor")
             setpoint = settings.value("setpoint")
@@ -2797,7 +2874,8 @@ class Set_point(QWidget):
             pass
 
     def save_settings(self):
-        settings = QSettings("Teplo", f"{config["IZDELIE"]}_SensorSettings_{self.index}")  # Use a unique identifier for each instance
+        settings = QSettings("Teplo",
+                             f"{config["IZDELIE"]}_SensorSettings_{self.index}")  # Use a unique identifier for each instance
         description = self.description_input.text()
         sensor = self.sensor_input.currentText()
         setpoint = self.setpoint_input.value()
@@ -3063,7 +3141,7 @@ class Timers(QMainWindow):
         hbox3.addWidget(self.timers_start_timer)
         hbox3.addWidget(self.reset_button)
         hbox3.addWidget(self.timer_stop)
-        hbox3.addWidget(self.alarm_stop)
+      #  hbox3.addWidget(self.alarm_stop)
         vbox.addLayout(hbox3)
 
         self.info = QLabel()
@@ -3248,7 +3326,7 @@ class Timers(QMainWindow):
         if not hasattr(self, 'first_loop'):
             self.start.setText(QDateTime.currentDateTime().toString("hh:mm:ss"))
             self.first_loop = True
-            self.hide_timer_settings()
+        #  self.hide_timer_settings()
 
     def get_cycle(self, settings):
         return settings.value(f'cycle_{self.timers.currentText()}', '0_1')
@@ -3289,10 +3367,10 @@ class Timers(QMainWindow):
                 self.add_timer.show()
                 self.exp_timer.show()
                 self.delete_timer.show()
-                for i in range(self.htimebox.count()):
-                    widget = self.htimebox.itemAt(i).widget()
-                    if widget:
-                        widget.hide()
+                #   for i in range(self.htimebox.count()):
+                #       widget = self.htimebox.itemAt(i).widget()
+                #       if widget:
+                #           widget.hide()
                 self.action_cb_list.show()
                 self.timers_cb_b.show()
                 self.timers_cb_del.show()
@@ -3320,6 +3398,7 @@ class Timers(QMainWindow):
             cycle_str = self.lb_cycle.text()
             cycle_parts = cycle_str.split('_')
             if int(cycle_parts[0]) != int(cycle_parts[1]):
+
                 if self.first_loop or '*' not in name_sens:
                     tr_dict = {tr.name: tr for tr in self.trlist}
                     dmp_dict = {dm.name: dm for dm in self.dmplist}
@@ -3342,22 +3421,39 @@ class Timers(QMainWindow):
                         if type(result) in case:
                             case[type(result)]()
                 self.action_timers.setCurrentIndex((self.action_timers.currentIndex() + 1) % self.action_timers.count())
-                print(self.action_timers.currentText())
                 if self.cond:
                     self.iteration_count -= 1
                 elif iteration_count < len(self.action_timers) - 1:
                     self.iteration_count += 1
                 else:
-                    cycle_parts[0] = str(int(cycle_parts[0]) + 1)
-                    result_str = '_'.join(cycle_parts)
-                    self.lb_cycle.setText(result_str)
-                    settings.setValue(f'cycle_{self.timers.currentText()}', result_str)
+                    # Увеличиваем текущий цикл
+                    new_current = int(cycle_parts[0]) + 1
+                    if self.last:
+                        # Да — останавливаемся после этого цикла
+                        result_str = f"{new_current}_{cycle_parts[1]}"
+                        self.lb_cycle.setText(result_str)
+                        settings.setValue(f'cycle_{self.timers.currentText()}', result_str)
+
+                        self.cond = False
+                        self.iteration_count = 0
+                        self.first_loop = True
+                        return  # ← ВЫХОД ИЗ ФУНКЦИИ
+                    else:
+                        # Нет — продолжаем как обычно
+                        result_str = f"{new_current}_{cycle_parts[1]}"
+                        self.lb_cycle.setText(result_str)
+                        settings.setValue(f'cycle_{self.timers.currentText()}', result_str)
+                        self.iteration_count = 0
+                        self.first_loop = True if self.continuous_checkbox.isChecked() else False
+                        self.continuous_checkbox.setChecked(False)
+                        self.start_timer(settings)  # → запускаем следующий цикл
                     self.iteration_count = 0
                     self.first_loop = True if self.continuous_checkbox.isChecked() else False
                     self.continuous_checkbox.setChecked(False)
                     if self.last:
                         self.timers.setCurrentIndex(self.timers.count() - 1)
                         self.lb_cycle.setText('0_1')
+
             else:
                 if self.timers.currentIndex() == 0:
                     settings.setValue(f'cycle_{self.timers.currentText()}', '0_1')
@@ -3378,6 +3474,8 @@ class Timers(QMainWindow):
 
     def process_sens_case(self, sens, ust, dop, name_sens):
         sens_data = Set_point.sensor_data.get((sens.reg, sens.ch), float('nan'))
+        sens_data += sens.amendment
+        print(sens_data)
         if sens_data < ust - dop or ust + dop < sens_data:
             self.action_timers.setCurrentIndex(self.action_timers.currentIndex() - 2)
             self.cond = True
@@ -3391,12 +3489,16 @@ class Timers(QMainWindow):
             dmpb.pressing('Close', ust)
         elif 'выкл' in name_sens.lower():
             try:
-                dmpb.chkbA.setChecked(False)
-            except Exception:
-                pass
+                print(dmpb)
+                dmpb.valve_widget.chkbA.setChecked(False)
+
+            except Exception as e:
+                print(e)
+
         elif 'вкл' in name_sens.lower():
             try:
-                dmpb.chkbA.setChecked(True)
+                print(dmpb)
+                dmpb.valve_widget.chkbA.setChecked(False)
             except Exception:
                 pass
         else:
@@ -4195,6 +4297,7 @@ class Setting(QWidget, File_formatter):
             dlgMain.algoritms = Timers()
             dlgMain.algoritms.setGeometry(400, 800, 400, 200)
             dlgMain.algoritms.hide_timer_settings()
+            dlgMain.algoritms.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
             dlgMain.algoritms.show()
         else:
             dlgMain.algoritms.raise_()
@@ -5172,6 +5275,16 @@ class MainShem(QMainWindow, File_formatter):
 
     #      child.setStyleSheet("background: rgba(0, 0, 255, 20); border: 1px dashed blue;")
 
+    def open_timer_logic(self):
+        if not hasattr(dlgMain, 'algoritms') or dlgMain.algoritms is None or not dlgMain.algoritms.isVisible():
+            dlgMain.algoritms = Timers()
+            dlgMain.algoritms.setGeometry(400, 800, 400, 200)
+            dlgMain.algoritms.hide_timer_settings()
+            dlgMain.algoritms.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+            dlgMain.algoritms.show()
+        else:
+            dlgMain.algoritms.raise_()
+            dlgMain.algoritms.activateWindow()
     def update_all_dampers(self):
         for damper in self.dampers_list:
             damper.update_lab_color()
@@ -5387,7 +5500,6 @@ class MainShem(QMainWindow, File_formatter):
         if sensor:
             value = self.sensor_data.get((sensor.reg, sensor.ch), float('nan'))
             sensor.l2.setText(f"{value + sensor.amendment:.{sensor.bit_depth}f}")
-
 
     def update_sensor_data(self, data_by_key, formuls):
         """
@@ -5861,7 +5973,9 @@ class MainShem(QMainWindow, File_formatter):
             # s1.start()
             graph_window_0 = GraphWindow()
             graph_window_0.show()
+
             self.algoritms = None
+
             """
             algoritms = Timers(parent=self)
             screen_resolution = QApplication.desktop().screenGeometry().size()
@@ -5872,6 +5986,10 @@ class MainShem(QMainWindow, File_formatter):
             """
             sleep(2)
             [damper._update_shutter_display_color() for damper in self.dlg_dampers_list]
+            if config.get('open_timer_logic') == 1 or config.get('open_timer_logic') == '1':
+                print('open_timer_logic')
+                QTimer.singleShot(1000, self.open_timer_logic)
+
             sys.exit(self.app.exec_())
 
         except Exception as e:
@@ -5884,5 +6002,7 @@ if __name__ == '__main__':
     from PyQt5.QtWidgets import QApplication
 
     dlgMain = MainShem()
+
     #  sleep(1)
+
     dlgMain.run_app()
